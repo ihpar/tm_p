@@ -22,6 +22,14 @@ python run_experiments.py --tag pc_only --features pc                --seed 0
 python run_experiments.py --tag full --seed 0 --eval_only --test_transpose 9
 python run_experiments.py --tag full --seed 0 --eval_only --test_shuffle
 
+# E5a: transposition-invariant interval representation (no absolute pitch)
+python run_experiments.py --tag interval       --features int,dur,meas --seed 0
+python run_experiments.py --tag interval_only  --features int          --seed 0
+# E5c: absolute pitch with random transposition augmentation during training
+python run_experiments.py --tag transpose_aug  --train_transpose_aug 13 --seed 0
+# E6 upper bound: trained AND tested on shuffled note order
+python run_experiments.py --tag train_shuffle  --train_shuffle --test_shuffle --seed 0
+
 Every run writes results/<tag>/seed<k>[__<perturbation>].json and (when training)
 results/<tag>/seed<k>.pt.  Aggregate with aggregate_results.py.
 """
@@ -76,6 +84,10 @@ def get_args():
     p.add_argument("--test_shuffle", action="store_true", help="shuffle note order in test pieces")
     p.add_argument("--test_transpose", type=int, default=0, help="transpose test pieces by k kommas")
     p.add_argument("--test_drop_rests", action="store_true")
+    p.add_argument("--train_shuffle", action="store_true",
+                   help="train on order-shuffled pieces (bag-of-notes upper bound)")
+    p.add_argument("--train_transpose_aug", type=int, default=0,
+                   help="random transposition in [-k, k] kommas for every training piece")
     p.add_argument("--save_attention", action="store_true",
                    help="store per-piece attention weights of the test set in the json")
     return p.parse_args()
@@ -161,9 +173,16 @@ def main():
         ([f"transpose{args.test_transpose:+d}"] if args.test_transpose else []) +
         ([f"norests"] if args.test_drop_rests else []))
 
+    train_pert = {}
+    if args.train_shuffle:
+        train_pert["shuffle_order"] = True
+    if args.train_transpose_aug:
+        train_pert["transpose_aug"] = args.train_transpose_aug
+
     train_loader, class_weights, val_loader, test_loader = build_dataloaders(
         args.vocab, args.dataset, batch_size=args.batch_size, seed=args.seed,
         split_dir=args.split_dir, test_perturbation=perturbation or None,
+        train_perturbation=train_pert or None,
         num_workers=args.num_workers, bucket=not args.no_bucket)
 
     model = BiLSTMAttentionClassifier(

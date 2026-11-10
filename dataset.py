@@ -38,6 +38,13 @@ MAKAM_VOCAB = {
 }
 NUM_CLASSES = len(MAKAM_VOCAB)
 
+# Interval representation (transposition-invariant pitch feature):
+# komma difference to the previous pitched note, clipped to +-INT_CLIP.
+#   id 0 = PAD, 1 = rest, 2 = first pitched note (no predecessor),
+#   3 .. 3+2*INT_CLIP  = interval -INT_CLIP .. +INT_CLIP
+INT_CLIP = 40
+INT_VOCAB_SIZE = 3 + 2 * INT_CLIP + 1
+
 # komma offset of each natural pitch class from C within an octave
 # (C-D 9, D-E 9, E-F 4, F-G 9, G-A 9, A-B 9, B-C 4; octave number increments at C,
 #  as in SymbTr pitch names, so C4 < G4). Verified against SymbTr's Koma53 column.
@@ -74,6 +81,23 @@ def komma_to_ids(k):
         # octave out of vocabulary (can happen after transposition) -> clip
         oct_id = OCT_VOCAB[min(max(octave, 3), 7)]
     return pc_id, acc_id, oct_id
+
+
+def interval_ids(notes):
+    """Interval token ids for a list of (pc, acc, oct, dur, meas) notes."""
+    out, prev = [], None
+    for pc, acc, octv, dur, meas in notes:
+        k = komma_index(pc, acc, octv)
+        if k is None:
+            out.append(1)
+            continue
+        if prev is None:
+            out.append(2)
+        else:
+            d = max(-INT_CLIP, min(INT_CLIP, k - prev))
+            out.append(3 + d + INT_CLIP)
+        prev = k
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -165,16 +189,21 @@ class MakamDataset(Dataset):
     Perturbations (all off by default; used in the control experiments):
       shuffle_order : permute the note order of every piece (pitch inventory kept)
       transpose     : shift every pitched note by this many kommas (53-TET)
+      transpose_aug : if > 0, shift each piece by a random integer in
+                      [-transpose_aug, +transpose_aug] kommas every time it is
+                      drawn (training-time augmentation)
       drop_rests    : remove rest events
+    The item also carries "ints", the interval representation (see interval_ids).
     """
 
     def __init__(self, pieces, labels, shuffle_order=False, transpose=0,
-                 drop_rests=False, seed=0):
+                 transpose_aug=0, drop_rests=False, seed=0):
         assert len(pieces) == len(labels)
         self.pieces = pieces
         self.labels = labels
         self.shuffle_order = shuffle_order
         self.transpose = transpose
+        self.transpose_aug = transpose_aug
         self.drop_rests = drop_rests
         self.rng = np.random.RandomState(seed)
 
@@ -184,14 +213,17 @@ class MakamDataset(Dataset):
     def _perturb(self, notes):
         if self.drop_rests:
             notes = [n for n in notes if n[0] != PC_VOCAB["Rest"]] or notes
-        if self.transpose:
+        shift = self.transpose
+        if self.transpose_aug:
+            shift += int(self.rng.randint(-self.transpose_aug, self.transpose_aug + 1))
+        if shift:
             new = []
             for pc, acc, octv, dur, meas in notes:
                 k = komma_index(pc, acc, octv)
                 if k is None:
                     new.append((pc, acc, octv, dur, meas))
                 else:
-                    pc2, acc2, oct2 = komma_to_ids(k + self.transpose)
+                    pc2, acc2, oct2 = komma_to_ids(k + shift)
                     new.append((pc2, acc2, oct2, dur, meas))
             notes = new
         if self.shuffle_order:
@@ -209,6 +241,7 @@ class MakamDataset(Dataset):
             "octs": torch.tensor(cols[2], dtype=torch.long),
             "durs": torch.tensor(cols[3], dtype=torch.long),
             "meas": torch.tensor(cols[4], dtype=torch.long),
+            "ints": torch.tensor(interval_ids(notes), dtype=torch.long),
             "label": torch.tensor(self.labels[idx], dtype=torch.long),
             "length": len(notes),
             "f_name": piece["f_name"],
@@ -219,7 +252,7 @@ def collate_fn(batch):
     # sort by length (descending) -- required by pack_padded_sequence
     batch.sort(key=lambda x: x["length"], reverse=True)
     out = {}
-    for key in ("pcs", "accs", "octs", "durs", "meas"):
+    for key in ("pcs", "accs", "octs", "durs", "meas", "ints"):
         out[key] = pad_sequence([b[key] for b in batch], batch_first=True, padding_value=0)
     out["mask"] = (out["pcs"] != 0).long()
     out["lengths"] = torch.tensor([b["length"] for b in batch])
@@ -265,13 +298,17 @@ class BucketBatchSampler(Sampler):
 # ----------------------------------------------------------------------------
 def build_dataloaders(vocab_file="vocab.pkl", dataset_file="dataset.pkl",
                       batch_size=8, seed=0, stratify=True, split_dir="splits",
-                      test_perturbation=None, num_workers=0, bucket=True):
+                      test_perturbation=None, train_perturbation=None,
+                      num_workers=0, bucket=True):
     """
     Returns train_loader, class_weights, val_loader, test_loader
     (same order as the original implementation).
 
-    test_perturbation: optional dict of MakamDataset kwargs applied to the
-    TEST set only, e.g. {"shuffle_order": True} or {"transpose": 9}.
+    test_perturbation : optional dict of MakamDataset kwargs applied to the
+                        TEST set only, e.g. {"shuffle_order": True} or {"transpose": 9}.
+    train_perturbation: optional dict applied to the TRAIN set only, e.g.
+                        {"shuffle_order": True} (bag-of-notes upper bound) or
+                        {"transpose_aug": 13} (transposition augmentation).
     """
     pieces, labels, _ = load_pieces(vocab_file, dataset_file)
 
@@ -285,7 +322,7 @@ def build_dataloaders(vocab_file="vocab.pkl", dataset_file="dataset.pkl",
     def subset(idx, **kw):
         return MakamDataset([pieces[i] for i in idx], [labels[i] for i in idx], **kw)
 
-    ds_train = subset(tr_idx)
+    ds_train = subset(tr_idx, **(train_perturbation or {}), seed=seed + 1000)
     ds_val = subset(va_idx)
     ds_test = subset(te_idx, **(test_perturbation or {}), seed=seed)
 

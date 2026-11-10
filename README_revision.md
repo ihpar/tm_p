@@ -54,10 +54,21 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 | note order / seyir (R1) | `full/seed*__shuffle.json` |
 | hyper-parameters (R1, R2-6) | `results/hparam_search.csv` + `args` block in every json |
 
-Not in this package yet (next step): interval representation (E5a),
-training with transposition augmentation (E5c), train-on-shuffled upper bound (E6),
-faithfulness tests (E7), attention normalisation / enrichment analyses and
-piece-level statistics (Step 2), figure regeneration (Step 3).
+## Stage 2 (`bash run_stage2.sh`, after `run_priority.sh`)
+
+| file | purpose | reviewer item |
+|---|---|---|
+| `run_experiments.py --features int,...` | interval (transposition-invariant) representation | R1 absolute pitch |
+| `run_experiments.py --train_transpose_aug 13` | transposition augmentation during training | R1 absolute pitch |
+| `run_experiments.py --train_shuffle` | bag-of-notes upper bound | R1 note order |
+| `faithfulness.py` | deletion tests (attention-top / saliency-top / random / attention-bottom), Spearman(attention, grad x input) | R1 faithfulness, R2-10 |
+| `attention_analysis.py` | T*alpha normalisation, pitch enrichment per makam, piece-level duration statistics (Friedman, Kendall W, Wilcoxon+Holm, paired Cliff's delta), 5x2 chi-square + Cramer's V, within-piece 95th-percentile threshold, rests, measure position, attention entropy per makam, figures | R1 normalisation/frequency/statistics, R2-7, 9, 11, 12 |
+| `results_figure.py` | overview bar chart of all accuracies with CIs | new results figure |
+
+Outputs: `results/faithfulness/`, `results/attention/` (note-level table, enrichment CSV,
+report JSON), `figs_rev/` (enrichment, duration bins, measure position, faithfulness,
+results overview).  The notation key for the paper is the spelling map printed by
+`python -c "from attention_analysis import symbtr_spelling_map; print(symbtr_spelling_map())"`.
 
 ## Sanity checks already done (CPU)
 
