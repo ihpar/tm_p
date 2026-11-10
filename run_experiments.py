@@ -51,6 +51,7 @@ def get_args():
     p.add_argument("--dataset", default="dataset.pkl")
     p.add_argument("--device", default="auto", help="auto | cuda | mps | cpu")
     p.add_argument("--num_workers", type=int, default=0)
+    p.add_argument("--no_bucket", action="store_true", help="plain random batches instead of length-bucketed")
     # model
     p.add_argument("--pooling", default="attn", choices=["attn", "mean", "max", "last"])
     p.add_argument("--features", default=",".join(ALL_FEATURES),
@@ -163,7 +164,7 @@ def main():
     train_loader, class_weights, val_loader, test_loader = build_dataloaders(
         args.vocab, args.dataset, batch_size=args.batch_size, seed=args.seed,
         split_dir=args.split_dir, test_perturbation=perturbation or None,
-        num_workers=args.num_workers)
+        num_workers=args.num_workers, bucket=not args.no_bucket)
 
     model = BiLSTMAttentionClassifier(
         **{f"{k}_vocab": v for k, v in DEFAULT_VOCAB_SIZES.items()},

@@ -19,7 +19,7 @@ import random
 import numpy as np
 import torch
 from collections import Counter
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.model_selection import train_test_split
 
@@ -228,12 +228,44 @@ def collate_fn(batch):
     return out
 
 
+class BucketBatchSampler(Sampler):
+    """
+    Groups pieces of similar length into the same mini-batch to reduce padding
+    and the number of recurrent steps per epoch. Pieces are shuffled, cut into
+    pools of `pool_factor` batches, sorted by length inside each pool, split into
+    batches, and the batch order is shuffled again. Model-agnostic: it only
+    changes which pieces share a batch, not the optimisation objective.
+    """
+
+    def __init__(self, lengths, batch_size, seed=0, pool_factor=20, shuffle=True):
+        self.lengths = np.asarray(lengths)
+        self.batch_size = batch_size
+        self.pool = batch_size * pool_factor
+        self.shuffle = shuffle
+        self.rng = np.random.RandomState(seed)
+
+    def __iter__(self):
+        idx = self.rng.permutation(len(self.lengths)) if self.shuffle else np.argsort(-self.lengths)
+        batches = []
+        for start in range(0, len(idx), self.pool):
+            pool = idx[start:start + self.pool]
+            pool = pool[np.argsort(-self.lengths[pool], kind="stable")]
+            batches += [pool[i:i + self.batch_size].tolist() for i in range(0, len(pool), self.batch_size)]
+        if self.shuffle:
+            order = self.rng.permutation(len(batches))
+            batches = [batches[i] for i in order]
+        return iter(batches)
+
+    def __len__(self):
+        return int(np.ceil(len(self.lengths) / self.batch_size))
+
+
 # ----------------------------------------------------------------------------
 # Public entry point
 # ----------------------------------------------------------------------------
 def build_dataloaders(vocab_file="vocab.pkl", dataset_file="dataset.pkl",
                       batch_size=8, seed=0, stratify=True, split_dir="splits",
-                      test_perturbation=None, num_workers=0):
+                      test_perturbation=None, num_workers=0, bucket=True):
     """
     Returns train_loader, class_weights, val_loader, test_loader
     (same order as the original implementation).
@@ -259,14 +291,24 @@ def build_dataloaders(vocab_file="vocab.pkl", dataset_file="dataset.pkl",
 
     class_weights = compute_class_weights([labels[i] for i in tr_idx])
 
-    g = torch.Generator()
-    g.manual_seed(seed)
-    train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True,
-                              collate_fn=collate_fn, generator=g, num_workers=num_workers)
-    val_loader = DataLoader(ds_val, batch_size=batch_size, shuffle=False,
-                            collate_fn=collate_fn, num_workers=num_workers)
-    test_loader = DataLoader(ds_test, batch_size=batch_size, shuffle=False,
-                             collate_fn=collate_fn, num_workers=num_workers)
+    if bucket:
+        def lens(idx):
+            return [len(pieces[i]["notes"]) for i in idx]
+        train_loader = DataLoader(ds_train, collate_fn=collate_fn, num_workers=num_workers,
+                                  batch_sampler=BucketBatchSampler(lens(tr_idx), batch_size, seed))
+        val_loader = DataLoader(ds_val, collate_fn=collate_fn, num_workers=num_workers,
+                                batch_sampler=BucketBatchSampler(lens(va_idx), batch_size, shuffle=False))
+        test_loader = DataLoader(ds_test, collate_fn=collate_fn, num_workers=num_workers,
+                                 batch_sampler=BucketBatchSampler(lens(te_idx), batch_size, shuffle=False))
+    else:
+        g = torch.Generator()
+        g.manual_seed(seed)
+        train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True,
+                                  collate_fn=collate_fn, generator=g, num_workers=num_workers)
+        val_loader = DataLoader(ds_val, batch_size=batch_size, shuffle=False,
+                                collate_fn=collate_fn, num_workers=num_workers)
+        test_loader = DataLoader(ds_test, batch_size=batch_size, shuffle=False,
+                                 collate_fn=collate_fn, num_workers=num_workers)
     return train_loader, class_weights, val_loader, test_loader
 
 
