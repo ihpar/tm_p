@@ -66,6 +66,9 @@ def attention_and_saliency(model, pieces, labels, device):
     ds = MakamDataset(pieces, labels)
     out = {}
     model.keep_input_grad = True
+    # cuDNN only supports RNN backward in training mode; the LSTM has no dropout
+    # (single layer), so switching only this module changes nothing numerically.
+    model.bilstm.train()
     for j in range(len(ds)):
         batch = collate_fn([ds[j]])
         b = to_device(batch, device)
@@ -81,6 +84,7 @@ def attention_and_saliency(model, pieces, labels, device):
             "sal": sal,
         }
     model.keep_input_grad = False
+    model.bilstm.eval()
     model.zero_grad()
     return out
 
