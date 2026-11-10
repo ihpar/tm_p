@@ -24,9 +24,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-ALL_FEATURES = ("pc", "acc", "oct", "dur", "meas")
-FEATURE_TO_BATCH_KEY = {"pc": "pcs", "acc": "accs", "oct": "octs", "dur": "durs", "meas": "meas"}
-DEFAULT_VOCAB_SIZES = {"pc": 9, "acc": 10, "oct": 7, "dur": 33, "meas": 4}
+from dataset import INT_VOCAB_SIZE
+
+ALL_FEATURES = ("pc", "acc", "oct", "dur", "meas")      # default (absolute pitch) model
+FEATURE_TO_BATCH_KEY = {"pc": "pcs", "acc": "accs", "oct": "octs", "dur": "durs",
+                        "meas": "meas", "int": "ints"}
+DEFAULT_VOCAB_SIZES = {"pc": 9, "acc": 10, "oct": 7, "dur": 33, "meas": 4, "int": INT_VOCAB_SIZE}
 
 
 class MaskedAttention(nn.Module):
@@ -44,7 +47,7 @@ class MaskedAttention(nn.Module):
 
 class BiLSTMAttentionClassifier(nn.Module):
     def __init__(self, pc_vocab=9, acc_vocab=10, oct_vocab=7, dur_vocab=33, meas_vocab=4,
-                 emb_dim=32, lstm_hidden=128, num_layers=1, num_classes=12, dropout=0.3,
+                 int_vocab=INT_VOCAB_SIZE, emb_dim=32, lstm_hidden=128, num_layers=1, num_classes=12, dropout=0.3,
                  pooling="attn", features=ALL_FEATURES, packed=True):
         super().__init__()
         assert pooling in ("attn", "mean", "max", "last")
@@ -52,7 +55,7 @@ class BiLSTMAttentionClassifier(nn.Module):
         self.features = tuple(features)
         self.packed = packed
         vocab_sizes = {"pc": pc_vocab, "acc": acc_vocab, "oct": oct_vocab,
-                       "dur": dur_vocab, "meas": meas_vocab}
+                       "dur": dur_vocab, "meas": meas_vocab, "int": int_vocab}
 
         self.embeddings = nn.ModuleDict({
             f: nn.Embedding(vocab_sizes[f], emb_dim, padding_idx=0) for f in self.features
@@ -72,11 +75,16 @@ class BiLSTMAttentionClassifier(nn.Module):
             nn.Linear(lstm_hidden, num_classes),
         )
         self.lstm_hidden = lstm_hidden
+        self.keep_input_grad = False   # set True to get gradient x input saliency
+        self.last_input = None
 
     def encode(self, batch):
         mask = batch["mask"]
         x = torch.cat([self.embeddings[f](batch[FEATURE_TO_BATCH_KEY[f]])
                        for f in self.features], dim=-1)
+        if self.keep_input_grad:
+            x.retain_grad()
+            self.last_input = x
         if self.packed:
             lengths = batch["lengths"].cpu()
             packed = pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
