@@ -324,7 +324,7 @@ def figures(df, enr, fig_dir, tag, pitch_order=False):
     ax.boxplot(data, showfliers=False)
     ax.axhline(1, color="k", ls=":", lw=0.8)
     ax.set_xticks(range(1, 6))
-    ax.set_xticklabels([f"{b}\n(n={len(d)} pieces)" for b, d in zip(BIN_LABELS, data)], fontsize=8)
+    ax.set_xticklabels([f"{b}\n(n={len(d)})" for b, d in zip(BIN_LABELS, data)], fontsize=8)
     ax.set_ylabel("Per-piece median of T·α")
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, f"duration_bins_{tag}.pdf"))
