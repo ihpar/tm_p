@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from dataset import load_pieces, read_split_files, MakamDataset, collate_fn, MAKAM_VOCAB, OCT_VOCAB
 OCT_ID_TO_VAL = {v: k for k, v in OCT_VOCAB.items()}
 from faithfulness import load_model, to_device
-from attention_analysis import pitch_label, symbtr_spelling_map, MEAS_LABELS
+from attention_analysis import pitch_label, symbtr_spelling_map, MEAS_LABELS, glyph
 
 MAKAM_NAMES = [k for k, _ in sorted(MAKAM_VOCAB.items(), key=lambda kv: kv[1])]
 PRETTY = {"hicaz": "Hicaz", "nihavent": "Nihavent", "ussak": "Uşşak", "rast": "Rast", "huzzam": "Hüzzam",
@@ -51,7 +51,6 @@ def confusion_figure(results_dir, fig_dir, tag="full"):
     ax.set_xticklabels(labels, rotation=60, ha="right", fontsize=8)
     ax.set_yticklabels(labels, fontsize=8)
     ax.set_xlabel("Predicted makam"); ax.set_ylabel("True makam")
-    ax.set_title(f"Pooled confusion matrix ({n} test sets, {cm.sum()} pieces)", fontsize=10)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, "confusion_pooled.pdf"))
@@ -82,7 +81,7 @@ def example_piece_figure(results_dir, split_dir, fig_dir, seed, piece_sub, top_k
     norm = a * T
     starts = [t for t, n in enumerate(notes) if n[4] == 1]
 
-    fig, ax = plt.subplots(figsize=(11, 4))
+    fig, ax = plt.subplots(figsize=(10, 4.2))
     for s in starts:
         ax.axvline(s - 0.5, color="#d62728", lw=0.6, alpha=0.5)
     ax.plot(range(T), norm, color="#1f77b4", lw=1)
@@ -101,7 +100,8 @@ def example_piece_figure(results_dir, split_dir, fig_dir, seed, piece_sub, top_k
         for t in cl:
             pc, acc, octv, dur, meas = notes[t]
             oct_str = "" if pc == 1 else f" (oct. {OCT_ID_TO_VAL[octv]})"
-            lines.append(f"{t}: {pitch_label(pc, acc, 'aeu', spelling)}{oct_str}, {dur_inv[dur]:.3g}, {MEAS_LABELS[meas]}")
+            oct_str = "" if pc == 1 else f", octave {OCT_ID_TO_VAL[octv]}"
+            lines.append(f"{t}: {glyph(pitch_label(pc, acc, 'aeu', spelling))}{oct_str}, {dur_inv[dur]:.3g}, {MEAS_LABELS[meas]}")
         tc = cl[len(cl) // 2]
         ytop = max(norm[t] for t in cl)
         level = (level + 1) % 2 if tc - prev_tc < 0.15 * T else 0
@@ -109,13 +109,11 @@ def example_piece_figure(results_dir, split_dir, fig_dir, seed, piece_sub, top_k
         ha = "right" if tc > 0.85 * T else ("left" if tc < 0.15 * T else "center")
         ax.annotate("\n".join(lines), (tc, ytop), xytext=(tc, min(ytop + ymax * (0.1 + 0.22 * level), ymax * 1.2)),
                     textcoords="data",
-                    ha=ha, va="bottom", fontsize=7, arrowprops=dict(arrowstyle="-", lw=0.5, color="gray"))
+                    ha=ha, va="bottom", fontsize=8.5, arrowprops=dict(arrowstyle="-", lw=0.5, color="gray"))
     ax.set_xlabel("Note index")
     ax.set_ylabel("Normalised attention  $T\\alpha_t$")
-    title = piece["f_name"].replace(".txt", "").replace("--", " | ").replace("_", " ")
-    ax.set_title(f"{title}\n true {PRETTY[MAKAM_NAMES[label]]}, predicted {PRETTY[pred]}, T = {T} notes; "
-                 f"red lines = measure starts; labels = note index: pitch, relative duration, position in measure", fontsize=9)
     ax.set_ylim(0, norm.max() * 1.6)
+    ax.tick_params(labelsize=9)
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, "example_piece.pdf"))
     fig.savefig(os.path.join(fig_dir, "example_piece.png"), dpi=200)
@@ -140,14 +138,32 @@ def length_figure(fig_dir):
     for q, c in ((np.median(L), "k"), (np.percentile(L, 95), "#d62728")):
         ax.axvline(q, color=c, ls="--", lw=1)
     ax.set_xlabel("Notes per piece"); ax.set_ylabel("Pieces")
-    ax.set_title(f"Sequence lengths (N = {len(L)}): median {int(np.median(L))}, mean {L.mean():.0f}, "
-                 f"95th pct {int(np.percentile(L, 95))}, max {L.max()}", fontsize=9)
     ax.set_xscale("log")
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, "length_hist.pdf"))
     fig.savefig(os.path.join(fig_dir, "length_hist.png"), dpi=200)
     plt.close(fig)
-    print(f"lengths: min {L.min()} median {np.median(L):.0f} mean {L.mean():.1f} p95 {np.percentile(L, 95):.0f} max {L.max()}")
+    print(f"lengths: min {L.min()} median {np.median(L):.1f} mean {L.mean():.1f} p95 {np.percentile(L, 95):.1f} max {L.max()}")
+
+
+def distribution_figure(fig_dir):
+    """Figure 1: pieces per makam, with display names."""
+    pieces, labels, _ = load_pieces()
+    from collections import Counter
+    c = Counter(labels)
+    order = sorted(c, key=lambda k: -c[k])
+    fig, ax = plt.subplots(figsize=(7, 3.4))
+    ax.bar([PRETTY[MAKAM_NAMES[k]] for k in order], [c[k] for k in order], color="#6baed6", edgecolor="white")
+    for i, k in enumerate(order):
+        ax.text(i, c[k] + 2, str(c[k]), ha="center", fontsize=8)
+    ax.set_ylabel("Number of pieces")
+    ax.set_ylim(0, max(c.values()) * 1.12)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(os.path.join(fig_dir, "distribution.pdf"))
+    fig.savefig(os.path.join(fig_dir, "distribution.png"), dpi=200)
+    plt.close(fig)
+    print("distribution:", {PRETTY[MAKAM_NAMES[k]]: c[k] for k in order}, "total", sum(c.values()))
 
 
 if __name__ == "__main__":
@@ -156,12 +172,14 @@ if __name__ == "__main__":
     ap.add_argument("--split_dir", default="splits")
     ap.add_argument("--fig_dir", default="figs_rev")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--piece", default="hicaz--sarki", help="substring selecting the example test piece")
+    ap.add_argument("--piece", default="hicaz--sarki--duyek--bogazici_sen",
+                    help="substring selecting the example test piece (default: the piece shown in the paper)")
     ap.add_argument("--top_k", type=int, default=6)
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     os.makedirs(args.fig_dir, exist_ok=True)
     confusion_figure(args.results_dir, args.fig_dir)
     length_figure(args.fig_dir)
+    distribution_figure(args.fig_dir)
     example_piece_figure(args.results_dir, args.split_dir, args.fig_dir, args.seed, args.piece, args.top_k,
                          torch.device(args.device))

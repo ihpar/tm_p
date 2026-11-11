@@ -47,7 +47,8 @@ INT_VOCAB_SIZE = 3 + 2 * INT_CLIP + 1
 
 # komma offset of each natural pitch class from C within an octave
 # (C-D 9, D-E 9, E-F 4, F-G 9, G-A 9, A-B 9, B-C 4; octave number increments at C,
-#  as in SymbTr pitch names, so C4 < G4). Verified against SymbTr's Koma53 column.
+#  as in SymbTr pitch names, so C4 < G4). Verified against SymbTr's KomaAE column
+#  (theoretical AEU komma index; the practice-adjusted Koma53 column differs).
 _PC_KOMMA_BASE = {"C": 0, "D": 9, "E": 18, "F": 22, "G": 31, "A": 40, "B": 49}
 _PC_ID_TO_NAME = {v: k for k, v in PC_VOCAB.items()}
 _OCT_ID_TO_VAL = {v: k for k, v in OCT_VOCAB.items()}

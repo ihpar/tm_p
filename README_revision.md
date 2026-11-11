@@ -22,7 +22,7 @@ The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model
 
 ```bash
 git clone https://github.com/ihpar/tmm_rep_learn && cd tmm_rep_learn
-pip install torch scikit-learn scipy pandas scikit-posthocs matplotlib openpyxl
+pip install torch scikit-learn scipy pandas matplotlib
 pip freeze > requirements.txt          # commit this
 bash run_all.sh                        # ~50 trainings; a few minutes each on a T4
 ```
@@ -37,10 +37,11 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 2. `bash run_all.sh`.
 3. `python aggregate_results.py --latex` → rows for the results table;
    `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
-   sets, 875 pieces) and confusion matrix for Fig. 3 / Table 2.
-4. Commit `splits/`, `results/**/*.json`, `results/*.txt`, `requirements.txt`
-   (the `.pt` checkpoints are ~1 MB each; commit at least `results/full/seed0.pt`,
-   which is the model used for all attention figures).
+   sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
+4. Commit `splits/`, `results/**/*.json`, `results/*.txt`, `requirements.txt`, and the
+   checkpoints used by the attention analyses: `git add -f results/full/seed*.pt results/no_meas/seed*.pt`
+   (about 13 MB in total). The unit of analysis in `attention_analysis.py` is the test
+   classification of a piece (seed, file name); 875 units over 656 distinct pieces.
 
 ## What each result answers
 
@@ -64,6 +65,8 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 | `faithfulness.py` | deletion tests (attention-top / saliency-top / random / attention-bottom), Spearman(attention, grad x input) | R1 faithfulness, R2-10 |
 | `attention_analysis.py` | T*alpha normalisation, pitch enrichment per makam, piece-level duration statistics (Friedman, Kendall W, Wilcoxon+Holm, paired Cliff's delta), 5x2 chi-square + Cramer's V, within-piece 95th-percentile threshold, rests, measure position, attention entropy per makam, figures | R1 normalisation/frequency/statistics, R2-7, 9, 11, 12 |
 | `results_figure.py` | overview bar chart of all accuracies with CIs | new results figure |
+| `extra_figures.py` | pooled confusion matrix, annotated example piece (`--piece bogazici_sen` is the piece in the paper), sequence-length histogram, makam distribution | Figures 1, 2, 5, 8 |
+| `attention_analysis.py --from_csv` | recompute statistics and figures from the saved note table without the checkpoints | |
 
 Outputs: `results/faithfulness/`, `results/attention/` (note-level table, enrichment CSV,
 report JSON), `figs_rev/` (enrichment, duration bins, measure position, faithfulness,

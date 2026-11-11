@@ -17,7 +17,7 @@ from aggregate_results import load_results, summary_table
 DEFAULT = [
     # (tag, perturbation, display label, group)
     ("full", "", "BiLSTM-attention (proposed)", "model"),
-    ("full_unpacked", "", "  same, unpacked LSTM (original code)", "model"),
+    ("full_unpacked", "", "  same, unpacked LSTM (preliminary version)", "model"),
     ("max_pool", "", "BiLSTM, max pooling", "model"),
     ("mean_pool", "", "BiLSTM, mean pooling", "model"),
     ("last_pool", "", "BiLSTM, last states", "model"),
@@ -35,9 +35,11 @@ DEFAULT = [
     ("interval", "", "interval representation (+dur, meas)", "invariance"),
     ("interval_only", "", "interval representation only", "invariance"),
     ("transpose_aug", "", "abs. pitch + transposition augmentation", "invariance"),
+    ("transpose_aug", "transpose+4", "  same, tested transposed +4 kommas", "invariance"),
     ("transpose_aug", "transpose+9", "  same, tested transposed +9 kommas", "invariance"),
-    ("full", "transpose+9", "proposed, tested transposed +9 kommas", "control"),
     ("full", "transpose+4", "proposed, tested transposed +4 kommas", "control"),
+    ("full", "transpose+9", "proposed, tested transposed +9 kommas", "control"),
+    ("full", "transpose-9", "proposed, tested transposed −9 kommas", "control"),
     ("full", "shuffle", "proposed, tested on shuffled note order", "control"),
     ("train_shuffle", "shuffle", "trained and tested on shuffled order", "control"),
 ]

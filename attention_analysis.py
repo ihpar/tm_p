@@ -26,7 +26,8 @@ classified correctly.  Then:
      measure-position bars.
 
 python attention_analysis.py --tag full --seeds 0 1 2 3 4
-python attention_analysis.py --tag no_meas --seeds 0     # for the measure-boundary check
+python attention_analysis.py --tag no_meas --seeds 0 1 2 3 4   # for the measure-boundary check
+python attention_analysis.py --tag full --from_csv              # recompute from the saved note table
 """
 
 import os
@@ -47,6 +48,14 @@ BINS = [0.0, 0.0625, 0.1875, 0.375, 0.75, 1.01]
 BIN_LABELS = ["Very short (≤1/16)", "Short (1/16–3/16]", "Medium (3/16–3/8]",
               "Long (3/8–3/4]", "Very long (>3/4)"]
 MEAS_LABELS = {1: "start", 2: "middle", 3: "end"}
+PRETTY = {"hicaz": "Hicaz", "nihavent": "Nihavent", "ussak": "Uşşak", "rast": "Rast", "huzzam": "Hüzzam",
+          "segah": "Segah", "huseyni": "Hüseyni", "mahur": "Mahur", "hicazkar": "Hicazkar",
+          "kurdilihicazkar": "Kürdili Hicazkar", "muhayyer": "Muhayyer", "saba": "Saba"}
+
+
+def glyph(label):
+    """'Bb4' -> 'B♭4', 'C#4' -> 'C♯4' for figure labels."""
+    return label.replace("b", "♭", 1).replace("#", "♯", 1) if len(label) > 1 and label[1] in "b#" else label
 
 # AEU-style display names for the (pc, acc) sharp-normalised vocabulary.
 # acc id k>=2 means k-1 kommas above the natural pitch class.
@@ -141,6 +150,7 @@ def pitch_enrichment(df, min_occ=1):
                 continue
             rows.append({"makam": makam, "pitch": pitch,
                          "pitch_aeu": g.loc[g["pitch"] == pitch, "pitch_aeu"].iloc[0],
+                         "komma_class": int(g.loc[g["pitch"] == pitch, "komma_class"].iloc[0]),
                          "n_occ": int(occ[pitch]), "occ_share": occ_share[pitch],
                          "attn_share": att_share[pitch], "enrichment": att_share[pitch] / occ_share[pitch],
                          "mean_norm_attn": mean_norm[pitch], "attn_entropy_bits": entropy,
@@ -148,12 +158,17 @@ def pitch_enrichment(df, min_occ=1):
     return pd.DataFrame(rows).sort_values(["makam", "occ_share"], ascending=[True, False])
 
 
+PIECE_KEY = ["seed", "f_name"]   # unit of analysis: one test classification (piece within a split)
+
+
 def piece_level_bins(df, value="norm_attn", agg="median"):
-    """One value per (piece, bin): median T*alpha (or share of high notes)."""
+    """One value per (test classification, bin): median T*alpha, or for
+    value='high_share' the fraction of the bin's notes that belong to the
+    piece's top-5% attention notes (expected 0.05 under no association)."""
     if value == "high_share":
-        pb = df.groupby(["f_name", "dur_bin"], observed=False)["high"].mean()
+        pb = df.groupby(PIECE_KEY + ["dur_bin"], observed=False)["high"].mean()
     else:
-        pb = df.groupby(["f_name", "dur_bin"], observed=False)[value].agg(agg)
+        pb = df.groupby(PIECE_KEY + ["dur_bin"], observed=False)[value].agg(agg)
     return pb.unstack("dur_bin")
 
 
@@ -190,7 +205,10 @@ def duration_stats(df, label):
         stat, p = stats.friedmanchisquare(*[pb[c].values for c in pb.columns])
         out["friedman_chi2"], out["friedman_p"] = float(stat), float(p)
         out["kendall_W"] = float(stat / (len(pb) * (len(pb.columns) - 1)))
-    out["piece_median_by_bin"] = {c: float(np.median(pb[c])) for c in pb.columns} if len(pb) else {}
+    out["piece_median_by_bin_complete_cases"] = {c: float(np.median(pb[c])) for c in pb.columns} if len(pb) else {}
+    pb_all_tmp = piece_level_bins(df, "norm_attn", "median")
+    out["piece_median_by_bin"] = {c: float(pb_all_tmp[c].dropna().median()) for c in pb_all_tmp.columns}
+    out["n_pieces_by_bin"] = {c: int(pb_all_tmp[c].notna().sum()) for c in pb_all_tmp.columns}
     # pairwise Wilcoxon on pieces having both bins
     pb_all = piece_level_bins(df, "norm_attn", "median")
     pairs, pvals = [], []
@@ -244,8 +262,16 @@ def rest_and_measure_stats(df):
     out["rest_share_of_attention"] = float(df.loc[df["is_rest"], "alpha"].sum() / df["alpha"].sum())
     out["mean_norm_attn_rests"] = float(df.loc[df["is_rest"], "norm_attn"].mean())
     out["mean_norm_attn_pitched"] = float(df.loc[~df["is_rest"], "norm_attn"].mean())
-    pm = df.groupby(["f_name", "meas_pos"])["norm_attn"].mean().unstack()
+    pm = df.groupby(PIECE_KEY + ["meas_pos"])["norm_attn"].mean().unstack()
     out["measure_position_piece_mean"] = {c: float(pm[c].mean()) for c in pm.columns}
+    out["measure_position_piece_median"] = {c: float(pm[c].median()) for c in pm.columns}
+    hm = df.groupby(PIECE_KEY + ["meas_pos"])["high"].mean().unstack()
+    out["measure_position_high_share_mean"] = {c: float(hm[c].mean()) for c in hm.columns}
+    subh = hm.dropna()
+    if len(subh) >= 5 and subh.shape[1] == 3:
+        stat, p = stats.friedmanchisquare(*[subh[c].values for c in subh.columns])
+        out["measure_position_high_share_friedman"] = {"chi2": float(stat), "p": float(p),
+                                                       "kendall_W": float(stat / (len(subh) * 2)), "n_pieces": int(len(subh))}
     sub = pm.dropna()
     if len(sub) >= 5 and sub.shape[1] == 3:
         stat, p = stats.friedmanchisquare(*[sub[c].values for c in sub.columns])
@@ -255,7 +281,7 @@ def rest_and_measure_stats(df):
 
 
 # ------------------------------------------------------------------ figures
-def figures(df, enr, fig_dir, tag):
+def figures(df, enr, fig_dir, tag, pitch_order=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -265,6 +291,8 @@ def figures(df, enr, fig_dir, tag):
     fig, axes = plt.subplots(4, 3, figsize=(12, 13), sharey=False)
     for ax, makam in zip(axes.ravel(), makams):
         e = enr[enr["makam"] == makam].sort_values("occ_share", ascending=False).head(10)
+        if pitch_order:
+            e = e.sort_values("komma_class")
         x = np.arange(len(e))
         ax.bar(x - 0.2, e["occ_share"] * 100, 0.4, label="share of notes", color="#9ecae1")
         ax.bar(x + 0.2, e["attn_share"] * 100, 0.4, label="share of attention", color="#3182bd")
@@ -273,18 +301,21 @@ def figures(df, enr, fig_dir, tag):
         ax2.axhline(1, color="k", ls=":", lw=0.8)
         ax2.set_ylim(0, max(2.5, e["enrichment"].max() * 1.1))
         ax.set_xticks(x)
-        ax.set_xticklabels(e["pitch_aeu"], rotation=60, fontsize=8)
-        ax.set_title(f"{makam}  (H = {e['attn_entropy_bits'].iloc[0]:.2f} bits)", fontsize=10)
+        ax.set_xticklabels([glyph(x) for x in e["pitch_aeu"]], rotation=60, fontsize=8)
+        ax.set_title(f"{PRETTY.get(makam, makam)}  (H = {e['attn_entropy_bits'].iloc[0]:.2f} bits)", fontsize=10)
         ax.set_ylabel("%", fontsize=8)
         ax2.set_ylabel("enrichment", fontsize=8)
     handles, labels_ = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles + [plt.Line2D([], [], color="k", marker=".", lw=1)], labels_ + ["enrichment (attention/occurrence)"],
                loc="lower center", ncol=3, fontsize=9)
-    fig.suptitle("Pitch occurrence vs. attention per makam (test pieces, all seeds)", y=0.995)
-    fig.tight_layout(rect=(0, 0.03, 1, 0.98))
-    fig.savefig(os.path.join(fig_dir, f"enrichment_{tag}.pdf"))
-    fig.savefig(os.path.join(fig_dir, f"enrichment_{tag}.png"), dpi=200)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    suffix = "_pitchorder" if pitch_order else ""
+    fig.savefig(os.path.join(fig_dir, f"enrichment_{tag}{suffix}.pdf"))
+    fig.savefig(os.path.join(fig_dir, f"enrichment_{tag}{suffix}.png"), dpi=200)
     plt.close(fig)
+    if not pitch_order:
+        figures(df, enr, fig_dir, tag, pitch_order=True)
+        return
 
     # 2. duration bins, piece-level medians
     pb = piece_level_bins(df, "norm_attn", "median")
@@ -295,22 +326,20 @@ def figures(df, enr, fig_dir, tag):
     ax.set_xticks(range(1, 6))
     ax.set_xticklabels([f"{b}\n(n={len(d)} pieces)" for b, d in zip(BIN_LABELS, data)], fontsize=8)
     ax.set_ylabel("Per-piece median of T·α")
-    ax.set_title("Attention by relative duration (piece as unit)")
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, f"duration_bins_{tag}.pdf"))
     fig.savefig(os.path.join(fig_dir, f"duration_bins_{tag}.png"), dpi=200)
     plt.close(fig)
 
     # 3. measure position
-    pm = df.groupby(["f_name", "meas_pos"])["norm_attn"].mean().unstack()
+    pm = df.groupby(PIECE_KEY + ["meas_pos"])["norm_attn"].mean().unstack()
     fig, ax = plt.subplots(figsize=(4, 3.5))
     cols = [c for c in ("start", "middle", "end") if c in pm.columns]
     ax.boxplot([pm[c].dropna().values for c in cols], showfliers=False)
     ax.axhline(1, color="k", ls=":", lw=0.8)
     ax.set_xticks(range(1, len(cols) + 1))
-    ax.set_xticklabels(cols)
+    ax.set_xticklabels([f"{c}\n(n={pm[c].notna().sum()})" for c in cols])
     ax.set_ylabel("Per-piece mean of T·α")
-    ax.set_title("Attention by measure position")
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, f"measure_position_{tag}.pdf"))
     fig.savefig(os.path.join(fig_dir, f"measure_position_{tag}.png"), dpi=200)
@@ -327,6 +356,8 @@ def main():
     ap.add_argument("--device", default="auto")
     ap.add_argument("--data_dir", default="data/txt", help="SymbTr txt files, for original pitch spellings")
     ap.add_argument("--include_rests_in_duration", action="store_true")
+    ap.add_argument("--from_csv", action="store_true",
+                    help="recompute statistics and figures from results/attention/<tag>_notes.csv.gz (no models needed)")
     args = ap.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" \
         else torch.device(args.device)
@@ -340,7 +371,12 @@ def main():
 
     spelling = symbtr_spelling_map(args.data_dir)
     frames = []
-    for seed in args.seeds:
+    if args.from_csv:
+        df = pd.read_csv(os.path.join(out_dir, f"{args.tag}_notes.csv.gz"))
+        df = df[df["seed"].isin(args.seeds)]
+        df["dur_bin"] = pd.Categorical(df["dur_bin"], categories=BIN_LABELS)
+        args.seeds = sorted(df["seed"].unique().tolist())
+    for seed in ([] if args.from_csv else args.seeds):
         seed_everything(seed)
         model, _ = load_model(os.path.join(args.results_dir, args.tag, f"seed{seed}.pt"), device)
         tr, va, te = read_split_files(pieces_all, seed, args.split_dir)
@@ -348,15 +384,17 @@ def main():
         df["seed"] = seed
         frames.append(df)
         print(f"[{args.tag} s{seed}] collected {len(df)} notes from {df['f_name'].nunique()} pieces")
-    df = pd.concat(frames, ignore_index=True)
-    df.to_csv(os.path.join(out_dir, f"{args.tag}_notes.csv.gz"), index=False)
+    if not args.from_csv:
+        df = pd.concat(frames, ignore_index=True)
+        df.to_csv(os.path.join(out_dir, f"{args.tag}_notes.csv.gz"), index=False)
 
     enr = pitch_enrichment(df)
     enr.to_csv(os.path.join(out_dir, f"{args.tag}_pitch_enrichment.csv"), index=False)
 
     dfd = df if args.include_rests_in_duration else df[~df["is_rest"]]
     report = {
-        "tag": args.tag, "seeds": args.seeds, "n_notes": int(len(df)), "n_pieces": int(df["f_name"].nunique()),
+        "tag": args.tag, "seeds": args.seeds, "n_notes": int(len(df)),
+        "n_test_classifications": int(df.groupby(PIECE_KEY).ngroups), "n_distinct_pieces": int(df["f_name"].nunique()),
         "duration_all": duration_stats(dfd, "all test pieces"),
         "duration_correct_only": duration_stats(dfd[dfd["correct"]], "correctly classified pieces"),
         "rest_and_measure": rest_and_measure_stats(df),
@@ -371,6 +409,7 @@ def main():
     # console summary
     d = report["duration_all"]
     print("\n=== Duration bins (piece level, rests excluded) ===")
+    print("n by bin:", d["n_pieces_by_bin"])
     print(f"pieces with all 5 bins: {d['n_pieces_all_bins']}  Friedman chi2={d.get('friedman_chi2', float('nan')):.2f} "
           f"p={d.get('friedman_p', float('nan')):.2g}  Kendall W={d.get('kendall_W', float('nan')):.3f}")
     print("per-piece median T*alpha by bin:", {k: round(v, 3) for k, v in d["piece_median_by_bin"].items()})

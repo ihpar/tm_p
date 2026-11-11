@@ -101,6 +101,32 @@ def delete_notes(piece, order, k_frac, rng=None):
     return {"f_name": piece["f_name"], "notes": [n for i, n in enumerate(piece["notes"]) if i not in drop]}
 
 
+def draw_figure(df, summ, args):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(5.5, 3.8))
+    base = df["base_accuracy"].mean()
+    labels_map = {"attn_top": "highest attention first", "grad_top": "highest saliency first",
+                  "random": "random", "attn_bottom": "lowest attention first"}
+    styles = {"attn_top": ("o", "-"), "grad_top": ("s", "-"), "random": ("^", "--"), "attn_bottom": ("v", ":")}
+    for name in ("attn_top", "grad_top", "random", "attn_bottom"):
+        s = summ[summ["order"] == name].sort_values("frac")
+        x = [0] + (s["frac"] * 100).tolist()
+        yv = [base] + s["acc_mean"].tolist()
+        err = [0] + s["acc_sd"].fillna(0).tolist()
+        ax.errorbar(x, np.array(yv) * 100, yerr=np.array(err) * 100, marker=styles[name][0], ls=styles[name][1],
+                    capsize=3, label=labels_map[name])
+    ax.set_xlabel("Notes deleted per piece (%)")
+    ax.set_ylabel("Test accuracy (%)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.pdf"))
+    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.png"), dpi=200)
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default="full")
@@ -111,7 +137,18 @@ def main():
     ap.add_argument("--split_dir", default="splits")
     ap.add_argument("--fig_dir", default="figs_rev")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--figure_only", action="store_true", help="redraw the figure from <tag>_summary.csv")
     args = ap.parse_args()
+    if args.figure_only:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        out_dir = os.path.join(args.results_dir, "faithfulness")
+        df = pd.read_csv(os.path.join(out_dir, f"{args.tag}_curves.csv"))
+        summ = pd.read_csv(os.path.join(out_dir, f"{args.tag}_summary.csv"))
+        os.makedirs(args.fig_dir, exist_ok=True)
+        draw_figure(df, summ, args)
+        return
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else
@@ -183,28 +220,7 @@ def main():
     pd.set_option("display.width", 200)
     print("\n", summ.to_string(index=False))
 
-    # figure
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(5.5, 3.8))
-    base = df["base_accuracy"].mean()
-    labels_map = {"attn_top": "highest attention first", "grad_top": "highest saliency first",
-                  "random": "random", "attn_bottom": "lowest attention first"}
-    for name in ("attn_top", "grad_top", "random", "attn_bottom"):
-        s = summ[summ["order"] == name].sort_values("frac")
-        x = [0] + (s["frac"] * 100).tolist()
-        yv = [base] + s["acc_mean"].tolist()
-        err = [0] + s["acc_sd"].fillna(0).tolist()
-        ax.errorbar(x, np.array(yv) * 100, yerr=np.array(err) * 100, marker="o", capsize=3, label=labels_map[name])
-    ax.set_xlabel("Notes deleted per piece (%)")
-    ax.set_ylabel("Test accuracy (%)")
-    ax.set_title(f"Deletion test ({args.tag}, {len(args.seeds)} seeds)")
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.pdf"))
-    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.png"), dpi=200)
+    draw_figure(df, summ, args)
     print("figure saved to", args.fig_dir)
 
 

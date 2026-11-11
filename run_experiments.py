@@ -63,7 +63,7 @@ def get_args():
     # model
     p.add_argument("--pooling", default="attn", choices=["attn", "mean", "max", "last"])
     p.add_argument("--features", default=",".join(ALL_FEATURES),
-                   help="comma-separated subset of pc,acc,oct,dur,meas")
+                   help="comma-separated subset of pc,acc,oct,dur,meas,int (int = interval representation)")
     p.add_argument("--emb_dim", type=int, default=32)
     p.add_argument("--hidden", type=int, default=128)
     p.add_argument("--num_layers", type=int, default=1)
