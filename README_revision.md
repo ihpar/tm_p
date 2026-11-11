@@ -39,8 +39,10 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
    `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
    sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
 4. Commit `splits/`, `results/**/*.json`, `results/*.txt`, `requirements.txt`, and the
-   checkpoints used by the attention analyses: `git add -f results/full/seed*.pt results/no_meas/seed*.pt`
-   (about 13 MB in total). The unit of analysis in `attention_analysis.py` is the test
+   checkpoints used by the attention analyses (`git add -f results/full/seed*.pt results/no_meas/seed*.pt`).
+   Note: only `results/full/seed0.pt` was archived for the JNMR revision; the attention
+   statistics and figures regenerate from `results/attention/*_notes.csv.gz` with `--from_csv`,
+   and the deletion-test results are in `results/faithfulness/`. The unit of analysis in `attention_analysis.py` is the test
    classification of a piece (seed, file name); 875 units over 656 distinct pieces.
 
 ## What each result answers
