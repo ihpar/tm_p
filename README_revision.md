@@ -55,7 +55,7 @@ python run_all.py                      # ~95 trainings; a few minutes each on a 
 1. `python hparam_search.py --trials 20` – look at `results/hparam_search.csv`.
    If the best configuration (by validation loss) differs from the defaults
    (hidden 128, emb 32, lr 1e-3, dropout 0.3, batch 8), put those values in the
-   `HP=` line of `run_all.sh`. Either way the search table goes into the paper
+   `--hp` option of `run_all.py` (e.g. `python run_all.py --hp --dropout 0.2`). Either way the search table goes into the paper
    (Reviewer 2, item 6).
 2. `python run_all.py`.
 3. `python aggregate_results.py --latex` → rows for the results table;
