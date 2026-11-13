@@ -8,8 +8,7 @@ python results_figure.py --tags full max_pool hist53_dur__logreg ...   # custom 
 import os
 import argparse
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
+import figstyle  # noqa: F401  (shared fonts/sizes)
 import matplotlib.pyplot as plt
 
 from aggregate_results import load_results, summary_table

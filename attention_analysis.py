@@ -54,8 +54,10 @@ PRETTY = {"hicaz": "Hicaz", "nihavent": "Nihavent", "ussak": "Uşşak", "rast": 
 
 
 def glyph(label):
-    """'Bb4' -> 'B♭4', 'C#4' -> 'C♯4' for figure labels."""
-    return label.replace("b", "♭", 1).replace("#", "♯", 1) if len(label) > 1 and label[1] in "b#" else label
+    """'Bb4' -> 'B$\\flat$4', 'C#4' -> 'C$\\sharp$4' (mathtext accidentals, as in the manuscript)."""
+    if len(label) > 1 and label[1] in "b#":
+        return label[0] + ("$\\flat$" if label[1] == "b" else "$\\sharp$") + label[2:]
+    return label
 
 # AEU-style display names for the (pc, acc) sharp-normalised vocabulary.
 # acc id k>=2 means k-1 kommas above the natural pitch class.
@@ -282,8 +284,7 @@ def rest_and_measure_stats(df):
 
 # ------------------------------------------------------------------ figures
 def figures(df, enr, fig_dir, tag, pitch_order=False, df_dur=None):
-    import matplotlib
-    matplotlib.use("Agg")
+    import figstyle  # noqa: F401  (shared fonts/sizes)
     import matplotlib.pyplot as plt
 
     # 1. enrichment: occurrence share vs attention share, top pitches per makam

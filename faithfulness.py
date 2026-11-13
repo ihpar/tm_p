@@ -102,8 +102,7 @@ def delete_notes(piece, order, k_frac, rng=None):
 
 
 def draw_figure(df, summ, args):
-    import matplotlib
-    matplotlib.use("Agg")
+    import figstyle  # noqa: F401  (shared fonts/sizes)
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(5.5, 3.8))
     base = df["base_accuracy"].mean()

@@ -15,8 +15,7 @@ import glob
 import argparse
 import numpy as np
 import torch
-import matplotlib
-matplotlib.use("Agg")
+import figstyle  # noqa: F401  (shared fonts/sizes)
 import matplotlib.pyplot as plt
 
 from dataset import load_pieces, read_split_files, MakamDataset, collate_fn, MAKAM_VOCAB, OCT_VOCAB
