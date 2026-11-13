@@ -281,7 +281,7 @@ def rest_and_measure_stats(df):
 
 
 # ------------------------------------------------------------------ figures
-def figures(df, enr, fig_dir, tag, pitch_order=False):
+def figures(df, enr, fig_dir, tag, pitch_order=False, df_dur=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -314,11 +314,11 @@ def figures(df, enr, fig_dir, tag, pitch_order=False):
     fig.savefig(os.path.join(fig_dir, f"enrichment_{tag}{suffix}.png"), dpi=200)
     plt.close(fig)
     if not pitch_order:
-        figures(df, enr, fig_dir, tag, pitch_order=True)
+        figures(df, enr, fig_dir, tag, pitch_order=True, df_dur=df_dur)
         return
 
-    # 2. duration bins, piece-level medians
-    pb = piece_level_bins(df, "norm_attn", "median")
+    # 2. duration bins, piece-level medians (same subset as the statistics: rests excluded)
+    pb = piece_level_bins(df_dur if df_dur is not None else df, "norm_attn", "median")
     fig, ax = plt.subplots(figsize=(7, 3.8))
     data = [pb[c].dropna().values for c in BIN_LABELS]
     ax.boxplot(data, showfliers=False)
@@ -404,7 +404,7 @@ def main():
     with open(os.path.join(out_dir, f"{args.tag}_report.json"), "w") as f:
         json.dump(report, f, indent=1, default=str)
 
-    figures(df, enr, args.fig_dir, args.tag)
+    figures(df, enr, args.fig_dir, args.tag, df_dur=dfd)
 
     # console summary
     d = report["duration_all"]
