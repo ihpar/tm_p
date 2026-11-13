@@ -1,4 +1,9 @@
 __pycache__/
 .DS_Store
 results/**/*.pt
-!results/full/seed0.pt
+!results/full/*.pt
+!results/no_meas/*.pt
+results_old_*/
+figs_rev_old_*/
+log_*.txt
+nohup.out

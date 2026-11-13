@@ -18,7 +18,30 @@ The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model
 `evaluation.ipynb` should now be pointed at `results/full/seed0.pt` and
 `build_dataloaders(..., seed=0)`.
 
-## Setup on lightning.ai
+## One-command re-run (Python only)
+
+```bash
+git clone https://github.com/ihpar/tm_p && cd tm_p
+pip install torch scikit-learn scipy pandas matplotlib
+nohup python run_all.py --fresh > log_run_all.txt 2>&1 &     # everything, resume-safe
+tail -f log_run_all.txt                                        # Ctrl-C leaves the job running
+```
+`run_all.py` runs, in order: hyperparameter search (20 trials, split 0), the training grid
+(11 tags x 5 seeds), the shuffle/transposition evaluations, the baselines, stage 2
+(interval, interval_only, transpose_aug, train_shuffle), the faithfulness and attention
+analyses, and all figures and summary tables. `--fresh` moves an existing `results/` and
+`figs_rev/` aside (`results_old_<timestamp>/`); `splits/` is kept so the same stratified
+splits are reused. Finished runs are skipped, so the script can be restarted at any time.
+Training is deterministic where PyTorch allows it (`--nondeterministic` disables that);
+trial 0 of the hyperparameter search has the same configuration as `full` seed 0, so
+`results/hp_00/seed0.json` and `results/full/seed0.json` should agree exactly on a
+deterministic setup. When finished:
+```bash
+git add results splits figs_rev requirements.txt && git commit -m "Re-run of all experiments" && git push
+```
+(`.gitignore` keeps the `full` and `no_meas` checkpoints, which the attention analyses use.)
+
+## Setup on lightning.ai (manual, shell scripts)
 
 ```bash
 git clone https://github.com/ihpar/tmm_rep_learn && cd tmm_rep_learn

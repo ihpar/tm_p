@@ -38,6 +38,8 @@ import os
 import json
 import time
 import argparse
+# Make CUDA matrix kernels deterministic (must be set before CUDA is initialised).
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 import numpy as np
 import torch
 from sklearn.metrics import (accuracy_score, f1_score, classification_report,
@@ -60,6 +62,8 @@ def get_args():
     p.add_argument("--device", default="auto", help="auto | cuda | mps | cpu")
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--no_bucket", action="store_true", help="plain random batches instead of length-bucketed")
+    p.add_argument("--nondeterministic", action="store_true",
+                   help="allow non-deterministic GPU kernels (faster; default is deterministic where PyTorch supports it)")
     # model
     p.add_argument("--pooling", default="attn", choices=["attn", "mean", "max", "last"])
     p.add_argument("--features", default=",".join(ALL_FEATURES),
@@ -149,6 +153,10 @@ def metrics(labels, preds):
 def main():
     args = get_args()
     seed_everything(args.seed)
+    if not args.nondeterministic:
+        # deterministic kernels where available (embedding backward, scatter ops);
+        # warn_only so that an op without a deterministic implementation does not abort
+        torch.use_deterministic_algorithms(True, warn_only=True)
     if args.device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
