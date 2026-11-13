@@ -10,7 +10,7 @@
 | `hparam_search.py` | random search on the validation set of seed 0 |
 | `baselines.py` | pitch-histogram / bigram baselines on the same splits |
 | `aggregate_results.py` | mean ± SD ± 95 % CI tables, pooled per-class report, confusion matrix |
-| `run_all.py` | the whole pipeline (see below) |
+| `run_all.sh` | the whole grid |
 
 The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model's
 `forward(batch) -> (logits, attn_weights)` interface and the
@@ -18,36 +18,13 @@ The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model
 `evaluation.ipynb` should now be pointed at `results/full/seed0.pt` and
 `build_dataloaders(..., seed=0)`.
 
-## One-command re-run (Python only)
-
-```bash
-git clone https://github.com/ihpar/tm_p && cd tm_p
-pip install torch scikit-learn scipy pandas matplotlib
-nohup python run_all.py --fresh > log_run_all.txt 2>&1 &     # everything, resume-safe
-tail -f log_run_all.txt                                        # Ctrl-C leaves the job running
-```
-`run_all.py` runs, in order: hyperparameter search (20 trials, split 0), the training grid
-(11 tags x 5 seeds), the shuffle/transposition evaluations, the baselines, stage 2
-(interval, interval_only, transpose_aug, train_shuffle), the faithfulness and attention
-analyses, and all figures and summary tables. `--fresh` moves an existing `results/` and
-`figs_rev/` aside (`results_old_<timestamp>/`); `splits/` is kept so the same stratified
-splits are reused. Finished runs are skipped, so the script can be restarted at any time.
-Training is deterministic where PyTorch allows it (`--nondeterministic` disables that);
-trial 0 of the hyperparameter search has the same configuration as `full` seed 0, so
-`results/hp_00/seed0.json` and `results/full/seed0.json` should agree exactly on a
-deterministic setup. When finished:
-```bash
-git add results splits figs_rev requirements.txt && git commit -m "Re-run of all experiments" && git push
-```
-(`.gitignore` keeps the `full` and `no_meas` checkpoints, which the attention analyses use.)
-
-## Manual steps (equivalent to what run_all.py does)
+## Setup on lightning.ai
 
 ```bash
 git clone https://github.com/ihpar/tmm_rep_learn && cd tmm_rep_learn
 pip install torch scikit-learn scipy pandas matplotlib
 pip freeze > requirements.txt          # commit this
-python run_all.py                      # ~95 trainings; a few minutes each on a T4
+bash run_all.sh                        # ~50 trainings; a few minutes each on a T4
 ```
 
 ## Order
@@ -55,17 +32,18 @@ python run_all.py                      # ~95 trainings; a few minutes each on a 
 1. `python hparam_search.py --trials 20` – look at `results/hparam_search.csv`.
    If the best configuration (by validation loss) differs from the defaults
    (hidden 128, emb 32, lr 1e-3, dropout 0.3, batch 8), put those values in the
-   `--hp` option of `run_all.py` (e.g. `python run_all.py --hp --dropout 0.2`). Either way the search table goes into the paper
+   `HP=` line of `run_all.sh`. Either way the search table goes into the paper
    (Reviewer 2, item 6).
-2. `python run_all.py`.
+2. `bash run_all.sh`.
 3. `python aggregate_results.py --latex` → rows for the results table;
    `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
    sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
 4. Commit `splits/`, `results/**/*.json`, `results/*.txt`, `requirements.txt`, and the
    checkpoints used by the attention analyses (`git add -f results/full/seed*.pt results/no_meas/seed*.pt`).
-   Note: only `results/full/seed0.pt` was archived for the JNMR revision; the attention
-   statistics and figures regenerate from `results/attention/*_notes.csv.gz` with `--from_csv`,
-   and the deletion-test results are in `results/faithfulness/`. The unit of analysis in `attention_analysis.py` is the test
+   The checkpoints of `full` (seeds 0-4) and `no_meas` (seeds 0-4) are archived; the attention
+   statistics and figures also regenerate from `results/attention/*_notes.csv.gz` with `--from_csv`,
+   and the deletion-test results are in `results/faithfulness/`. Tag `jnmr-r1` marks the state used
+   in the revised manuscript; `jnmr-r1-prelim` marks the earlier, non-deterministic run. The unit of analysis in `attention_analysis.py` is the test
    classification of a piece (seed, file name); 875 units over 656 distinct pieces.
 
 ## What each result answers
@@ -80,7 +58,7 @@ python run_all.py                      # ~95 trainings; a few minutes each on a 
 | note order / seyir (R1) | `full/seed*__shuffle.json` |
 | hyper-parameters (R1, R2-6) | `results/hparam_search.csv` + `args` block in every json |
 
-## Stage 2 (run by `run_all.py --stage stage2`)
+## Stage 2 (`bash run_stage2.sh`, after `run_priority.sh`)
 
 | file | purpose | reviewer item |
 |---|---|---|
