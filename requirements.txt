@@ -25,12 +25,10 @@ debugpy==1.8.22
 defusedxml==0.7.1
 distlib==0.4.4
 distro==1.9.0
-et_xmlfile==2.0.0
 executing==2.3.0
 fastjsonschema==2.22.3
 filelock==4.2.1
 fonttools==4.68.0
-formulaic==1.2.2
 fqdn==1.6.0
 fsspec==2026.9.0
 h11==0.16.0
@@ -39,7 +37,6 @@ httpcore==1.0.9
 httplib2==0.20.4
 httpx==0.28.1
 idna==3.20
-interface_meta==2.0.1
 ipykernel==7.4.0
 ipython==9.18.1
 ipython_pygments_lexers==1.1.1
@@ -100,12 +97,10 @@ nvidia-nvjitlink-cu12==12.9.86
 nvidia-nvshmem-cu12==3.4.5
 nvidia-nvtx-cu12==12.9.79
 oauthlib==3.2.2
-openpyxl==3.1.5
 packaging==26.3
 pandas==3.1.1
 pandocfilters==1.5.1
 parso==0.8.7
-patsy==1.0.3
 pexpect==4.9.0
 pillow==13.0.0
 platformdirs==4.14.5
@@ -132,15 +127,12 @@ rfc3986-validator==0.1.1
 rfc3987-syntax==1.1.0
 rpds-py==2026.9.1
 scikit-learn==1.9.1
-scikit-posthocs==0.17.1
 scipy==1.18.1
-seaborn==0.13.2
 Send2Trash==2.1.0
 setuptools==81.0.0
 six==1.16.0
 soupsieve==4.0.1
 stack-data==0.6.3
-statsmodels==0.15.0
 sympy==1.14.0
 terminado==0.18.1
 threadpoolctl==3.8.0
@@ -164,4 +156,3 @@ webencodings==0.6.1
 websocket-client==1.9.2
 wheel==0.46.2
 widgetsnbextension==4.0.16
-wrapt==2.5.2
