@@ -10,7 +10,7 @@
 | `hparam_search.py` | random search on the validation set of seed 0 |
 | `baselines.py` | pitch-histogram / bigram baselines on the same splits |
 | `aggregate_results.py` | mean ± SD ± 95 % CI tables, pooled per-class report, confusion matrix |
-| `run_all.sh` | the whole grid |
+| `run_all.py` | the whole pipeline (see below) |
 
 The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model's
 `forward(batch) -> (logits, attn_weights)` interface and the
@@ -41,13 +41,13 @@ git add results splits figs_rev requirements.txt && git commit -m "Re-run of all
 ```
 (`.gitignore` keeps the `full` and `no_meas` checkpoints, which the attention analyses use.)
 
-## Setup on lightning.ai (manual, shell scripts)
+## Manual steps (equivalent to what run_all.py does)
 
 ```bash
 git clone https://github.com/ihpar/tmm_rep_learn && cd tmm_rep_learn
 pip install torch scikit-learn scipy pandas matplotlib
 pip freeze > requirements.txt          # commit this
-bash run_all.sh                        # ~50 trainings; a few minutes each on a T4
+python run_all.py                      # ~95 trainings; a few minutes each on a T4
 ```
 
 ## Order
@@ -57,7 +57,7 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
    (hidden 128, emb 32, lr 1e-3, dropout 0.3, batch 8), put those values in the
    `HP=` line of `run_all.sh`. Either way the search table goes into the paper
    (Reviewer 2, item 6).
-2. `bash run_all.sh`.
+2. `python run_all.py`.
 3. `python aggregate_results.py --latex` → rows for the results table;
    `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
    sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
@@ -80,7 +80,7 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 | note order / seyir (R1) | `full/seed*__shuffle.json` |
 | hyper-parameters (R1, R2-6) | `results/hparam_search.csv` + `args` block in every json |
 
-## Stage 2 (`bash run_stage2.sh`, after `run_priority.sh`)
+## Stage 2 (run by `run_all.py --stage stage2`)
 
 | file | purpose | reviewer item |
 |---|---|---|
