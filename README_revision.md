@@ -1,6 +1,6 @@
 # Revision experiments – how to run
 
-## Files (drop into the repository root, replacing the old `dataset.py` / `bilstm.py`)
+## Files
 
 | file | purpose |
 |---|---|
@@ -21,7 +21,7 @@ The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model
 ## Setup on lightning.ai
 
 ```bash
-git clone https://github.com/ihpar/tmm_rep_learn && cd tmm_rep_learn
+git clone https://github.com/ihpar/tm_p && cd tm_p
 pip install torch scikit-learn scipy pandas matplotlib
 pip freeze > requirements.txt          # commit this
 bash run_all.sh                        # ~50 trainings; a few minutes each on a T4
@@ -38,8 +38,8 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 3. `python aggregate_results.py --latex` → rows for the results table;
    `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
    sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
-4. Commit `splits/`, `results/**/*.json`, `results/*.txt`, `requirements.txt`, and the
-   checkpoints used by the attention analyses (`git add -f results/full/seed*.pt results/no_meas/seed*.pt`).
+4. Commit `splits/`, `results/`, `figs_rev/` and `requirements.txt` (`.gitignore` keeps the
+   checkpoints used by the attention analyses and drops the others).
    The checkpoints of `full` (seeds 0-4) and `no_meas` (seeds 0-4) are archived; the attention
    statistics and figures also regenerate from `results/attention/*_notes.csv.gz` with `--from_csv`,
    and the deletion-test results are in `results/faithfulness/`. Tag `jnmr-r1` marks the state used

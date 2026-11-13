@@ -7,3 +7,4 @@ results_old_*/
 figs_rev_old_*/
 log_*.txt
 nohup.out
+.DS_Store

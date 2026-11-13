@@ -15,6 +15,7 @@ import json
 import glob
 import random
 import argparse
+import sys
 import subprocess
 import pandas as pd
 
@@ -53,7 +54,7 @@ def main():
         tag = f"hp_{i:02d}"
         json_path = os.path.join(args.results_dir, tag, f"seed{args.seed}.json")
         if not os.path.exists(json_path):
-            cmd = ["python", "run_experiments.py", "--tag", tag, "--seed", str(args.seed),
+            cmd = [sys.executable, "run_experiments.py", "--tag", tag, "--seed", str(args.seed),
                    "--hidden", str(c["hidden"]), "--emb_dim", str(c["emb_dim"]),
                    "--lr", str(c["lr"]), "--dropout", str(c["dropout"]),
                    "--batch_size", str(c["batch_size"])] + args.extra.split()

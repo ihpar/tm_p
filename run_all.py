@@ -1,6 +1,6 @@
 """
 Single Python driver for the complete experiment pipeline of the revision.
-Replaces run_priority.sh, run_stage2.sh and the manual steps.
+Runs every stage of the pipeline in order (formerly split over shell scripts).
 
     python run_all.py                 # everything, in order, resume-safe
     python run_all.py --fresh         # move an existing results/ to results_old_<timestamp>/ first
@@ -87,9 +87,14 @@ def evaluate(tag, seed, pert_args, pert_name, args, log):
 
 
 def stage_hparam(args, log):
-    if os.path.exists(os.path.join("results", "hparam_search.csv")) and not args.smoke:
-        print("  [skip] hyperparameter search already done (results/hparam_search.csv)")
-        return
+    csv = os.path.join("results", "hparam_search.csv")
+    if os.path.exists(csv) and not args.smoke:
+        with open(csv) as f:
+            n_rows = sum(1 for _ in f) - 1
+        if n_rows >= 20:
+            print("  [skip] hyperparameter search already done (results/hparam_search.csv)")
+            return
+        print(f"  hyperparameter search incomplete ({n_rows}/20 trials); resuming")
     cmd = [PY, "hparam_search.py", "--trials", "2" if args.smoke else "20", "--seed", "0"]
     if args.smoke:
         cmd += ["--extra", "--epochs 1 --max_train_batches 3" + (f" --device {args.device}" if args.device else "")]
@@ -158,11 +163,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=list(STAGES), default=None, help="run only this stage")
     ap.add_argument("--seeds", type=int, nargs="+", default=SEEDS_ALL)
-    ap.add_argument("--hp", nargs="*", default=[], help="hyperparameter overrides, e.g. --hp --hidden 256")
+    ap.add_argument("--hp", default="", help='hyperparameter overrides as one quoted string, e.g. --hp "--hidden 256 --dropout 0.2"')
     ap.add_argument("--device", default=None, help="auto (default) | cuda | mps | cpu")
-    ap.add_argument("--fresh", action="store_true", help="move existing results/ and splits/ aside before starting")
+    ap.add_argument("--fresh", action="store_true", help="move existing results/ and figs_rev/ aside before starting (splits/ is kept)")
     ap.add_argument("--smoke", action="store_true", help="tiny dry run of every step")
     args = ap.parse_args()
+    args.hp = args.hp.split()
 
     for f in ("run_experiments.py", "baselines.py", "faithfulness.py", "attention_analysis.py", "dataset.pkl", "vocab.pkl"):
         if not os.path.exists(f):
