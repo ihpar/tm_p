@@ -133,11 +133,14 @@ def length_figure(fig_dir):
     pieces, labels, _ = load_pieces()
     L = np.array([len(p["notes"]) for p in pieces])
     fig, ax = plt.subplots(figsize=(5.5, 3.2))
-    ax.hist(L, bins=np.arange(0, L.max() + 100, 100), color="#9ecae1", edgecolor="white")
+    # logarithmically spaced bins: the axis is logarithmic, and linear bins starting at 0 would
+    # clip the pieces shorter than the first tick
+    ax.hist(L, bins=np.logspace(np.log10(L.min()), np.log10(L.max()), 36), color="#9ecae1", edgecolor="white")
     for q, c in ((np.median(L), "k"), (np.percentile(L, 95), "#d62728")):
         ax.axvline(q, color=c, ls="--", lw=1)
     ax.set_xlabel("Notes per piece"); ax.set_ylabel("Pieces")
     ax.set_xscale("log")
+    ax.set_xlim(L.min() * 0.9, L.max() * 1.1)
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, "length_hist.pdf"))
     fig.savefig(os.path.join(fig_dir, "length_hist.png"), dpi=200)
