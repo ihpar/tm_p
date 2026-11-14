@@ -1,50 +1,59 @@
-# Revision experiments – how to run
+# Code and results for "Attention-Based Inspection of Symbolic Makam Recognition with a BiLSTM on SymbTr"
+
+Tag `jnmr-r1` marks the state used in the revised manuscript (deterministic run);
+`jnmr-r1-prelim` marks the earlier, non-deterministic run that the manuscript refers to
+for the duration analysis.
 
 ## Files
 
 | file | purpose |
 |---|---|
-| `dataset.py` | stratified seeded splits (written to `splits/`), class weights, test-time perturbations (shuffle / transpose), komma-index helpers |
+| `run_all.py` | single driver for the whole pipeline (hyperparameter search, all trainings, test-time perturbations, baselines, deletion tests, attention statistics, figures, summary tables); resume-safe |
+| `dataset.py` | stratified seeded splits (written to `splits/`), class weights, perturbations (shuffle / transpose / transposition augmentation), interval tokens, komma-index helpers |
 | `bilstm.py` | packed BiLSTM, pooling = attn / mean / max / last, feature subsets |
 | `run_experiments.py` | trains or evaluates one configuration, writes `results/<tag>/seed<k>.json` + `.pt` |
-| `hparam_search.py` | random search on the validation set of seed 0 |
+| `hparam_search.py` | random search (20 configurations) on the validation subset of split 0 |
 | `baselines.py` | pitch-histogram / bigram baselines on the same splits |
+| `faithfulness.py` | deletion tests and attention-saliency rank correlation |
+| `attention_analysis.py` | note-level attention table, pitch enrichment, piece-level duration and measure-position statistics, figures |
+| `results_figure.py`, `extra_figures.py`, `figstyle.py` | overview figure; confusion matrix, example piece, length histogram, makam distribution; shared figure style |
 | `aggregate_results.py` | mean ± SD ± 95 % CI tables, pooled per-class report, confusion matrix |
-| `run_all.sh` | the whole grid |
+| `file_parser.py`, `txt_parser.ipynb` | SymbTr `.txt` parser that produced `dataset.pkl` and `vocab.pkl` from `data/txt/` (SymbTr v2.4.3) |
+| `requirements.txt` | `pip freeze` of the environment in which the archived results were produced |
 
-The old `train.py`, `train.ipynb` and `evaluation.ipynb` keep working: the model's
-`forward(batch) -> (logits, attn_weights)` interface and the
-`build_dataloaders(...) -> (train, class_weights, val, test)` return order are unchanged.
-`evaluation.ipynb` should now be pointed at `results/full/seed0.pt` and
-`build_dataloaders(..., seed=0)`.
+`train.py`, `train.ipynb`, `evaluation.ipynb`, `attention_inspector.py`, `plot_manager.py`,
+`wv_utils.py` and `dataset_checks.ipynb` are legacy files of the preliminary version and are
+not used by the pipeline.
 
-## Setup on lightning.ai
+## Reproducing the results
 
 ```bash
 git clone https://github.com/ihpar/tm_p && cd tm_p
-pip install torch scikit-learn scipy pandas matplotlib
-pip freeze > requirements.txt          # commit this
-bash run_all.sh                        # ~50 trainings; a few minutes each on a T4
+pip install torch scikit-learn scipy pandas matplotlib      # or: pip install -r requirements.txt
+python run_all.py --fresh        # moves the archived results/ and figs_rev/ aside and re-runs everything
 ```
 
-## Order
+`python run_all.py` without `--fresh` skips every run whose result file already exists, so on a
+fresh clone it only regenerates what is missing. Other options: `--stage hparam | train | evals |
+baselines | stage2 | analysis | figures` runs one stage, `--seeds 0 1` restricts the splits,
+`--hp "--hidden 256 --dropout 0.2"` overrides hyperparameters, `--device cuda|mps|cpu`, and
+`--smoke` does a one-epoch dry run of every step. The full pipeline (about 100 trainings of roughly
+two minutes each plus the analyses) takes a few hours on one consumer GPU. Training is seeded and
+uses deterministic kernels; on the same hardware and library versions it reproduces the archived
+models exactly (`hp_00` and `full/seed0` are two independent trainings of the same configuration
+and are identical).
 
-1. `python hparam_search.py --trials 20` – look at `results/hparam_search.csv`.
-   If the best configuration (by validation loss) differs from the defaults
-   (hidden 128, emb 32, lr 1e-3, dropout 0.3, batch 8), put those values in the
-   `HP=` line of `run_all.sh`. Either way the search table goes into the paper
-   (Reviewer 2, item 6).
-2. `bash run_all.sh`.
-3. `python aggregate_results.py --latex` → rows for the results table;
-   `python aggregate_results.py --tag full` → per-class table (pooled over the 5 test
-   sets, 875 test classifications) and confusion matrix (Table 5 / Figure 5 of the revision).
-4. Commit `splits/`, `results/`, `figs_rev/` and `requirements.txt` (`.gitignore` keeps the
-   checkpoints used by the attention analyses and drops the others).
-   The checkpoints of `full` (seeds 0-4) and `no_meas` (seeds 0-4) are archived; the attention
-   statistics and figures also regenerate from `results/attention/*_notes.csv.gz` with `--from_csv`,
-   and the deletion-test results are in `results/faithfulness/`. Tag `jnmr-r1` marks the state used
-   in the revised manuscript; `jnmr-r1-prelim` marks the earlier, non-deterministic run. The unit of analysis in `attention_analysis.py` is the test
-   classification of a piece (seed, file name); 875 units over 656 distinct pieces.
+The stages write `results/hparam_search.csv`, `results/<tag>/seed<k>[__<perturbation>].json`,
+`results/faithfulness/`, `results/attention/`, `figs_rev/`, `results/summary.txt` (all accuracies,
+mean ± CI, LaTeX rows) and `results/full_pooled.txt` (per-class report and confusion matrix pooled
+over the five test subsets, 875 test classifications of 656 distinct pieces).
+
+Only the checkpoints of `full` and `no_meas` (seeds 0-4), which the attention analyses need, are
+archived (`.gitignore` drops the others). The attention statistics and figures also regenerate
+without checkpoints from `results/attention/*_notes.csv.gz`
+(`python attention_analysis.py --tag full --from_csv`), and the deletion-test figure from
+`results/faithfulness/` (`python faithfulness.py --figure_only`). The unit of analysis in
+`attention_analysis.py` is the test classification of a piece (seed, file name).
 
 ## What each result answers
 
@@ -58,7 +67,7 @@ bash run_all.sh                        # ~50 trainings; a few minutes each on a 
 | note order / seyir (R1) | `full/seed*__shuffle.json` |
 | hyper-parameters (R1, R2-6) | `results/hparam_search.csv` + `args` block in every json |
 
-## Stage 2 (`bash run_stage2.sh`, after `run_priority.sh`)
+## Stage 2, analysis and figure scripts (stages `stage2`, `analysis`, `figures` of `run_all.py`)
 
 | file | purpose | reviewer item |
 |---|---|---|
