@@ -4,6 +4,8 @@ Aggregate results/<tag>/seed*.json files into the tables needed for the paper.
 python aggregate_results.py                 # all tags, markdown summary table
 python aggregate_results.py --tag full      # + pooled per-class report and confusion matrix
 python aggregate_results.py --latex         # LaTeX rows instead of markdown
+python aggregate_results.py --paired        # paired differences and t-tests against the proposed model,
+                                            # and the error concentration in the A-tonic group per model
 """
 
 import os
@@ -68,6 +70,58 @@ def pooled_report(rows):
     return pd.DataFrame(rep).T, pd.DataFrame(cm, index=MAKAM_NAMES, columns=MAKAM_NAMES)
 
 
+def paired_tests(df, reference="full"):
+    """Paired comparison of every (tag, perturbation) with the unperturbed reference model
+    over the splits they share: mean difference in percentage points and paired t-test."""
+    ref = df[(df["tag"] == reference) & (df["perturbation"] == "")].set_index("seed")["accuracy"]
+    recs = []
+    for (tag, pert), g in df.groupby(["tag", "perturbation"]):
+        if tag == reference and pert == "":
+            continue
+        a = g.set_index("seed")["accuracy"]
+        common = sorted(set(a.index) & set(ref.index))
+        if len(common) < 3:
+            continue
+        d = 100 * (a.loc[common].values - ref.loc[common].values)
+        recs.append({"tag": tag, "perturbation": pert, "n_splits": len(common),
+                     "acc_mean": 100 * a.loc[common].mean(), "delta_points": d.mean(),
+                     "p_paired_t": stats.ttest_rel(a.loc[common].values, ref.loc[common].values).pvalue,
+                     "all_splits_same_sign": bool((d > 0).all() or (d < 0).all())})
+    return pd.DataFrame(recs)
+
+
+def pair_test(df, tag_a, tag_b):
+    """Paired difference tag_a - tag_b (unperturbed runs) over the shared splits."""
+    a = df[(df["tag"] == tag_a) & (df["perturbation"] == "")].set_index("seed")["accuracy"]
+    b = df[(df["tag"] == tag_b) & (df["perturbation"] == "")].set_index("seed")["accuracy"]
+    common = sorted(set(a.index) & set(b.index))
+    d = 100 * (a.loc[common].values - b.loc[common].values)
+    return d.mean(), stats.ttest_rel(a.loc[common].values, b.loc[common].values).pvalue
+
+
+def group_errors(rows, group=("ussak", "huseyni", "muhayyer"), pair=("segah", "huzzam")):
+    """Per tag (unperturbed runs, pooled over splits): number of errors, errors inside the
+    A-tonic group, errors inside the Segah-Huzzam pair, recall of Huseyni and Muhayyer."""
+    gi = [MAKAM_NAMES.index(m) for m in group]
+    pi = [MAKAM_NAMES.index(m) for m in pair]
+    by_tag = {}
+    for r in rows:
+        if not r.get("perturbation"):
+            by_tag.setdefault(r["tag"], []).append(r)
+    recs = []
+    for tag, rs in sorted(by_tag.items()):
+        if len(rs) < 5:
+            continue
+        _, cm = pooled_report(rs)
+        c = cm.values
+        recs.append({"tag": tag, "errors": int(c.sum() - np.trace(c)),
+                     "within_group": int(sum(c[i, j] for i in gi for j in gi if i != j)),
+                     "segah_huzzam": int(sum(c[i, j] for i in pi for j in pi if i != j)),
+                     "recall_huseyni": c[gi[1], gi[1]] / c[gi[1]].sum(),
+                     "recall_muhayyer": c[gi[2], gi[2]] / c[gi[2]].sum()})
+    return pd.DataFrame(recs)
+
+
 def fmt_pct(m, ci):
     return f"{100 * m:.2f} $\\pm$ {100 * ci:.2f}" if not np.isnan(ci) else f"{100 * m:.2f}"
 
@@ -77,6 +131,7 @@ def main():
     ap.add_argument("--results_dir", default="results")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--latex", action="store_true")
+    ap.add_argument("--paired", action="store_true")
     args = ap.parse_args()
 
     rows = load_results(args.results_dir, args.tag)
@@ -95,6 +150,17 @@ def main():
             f1 = (f"{r['f1_mean']:.3f} $\\pm$ {r['f1_ci']:.3f}" if not np.isnan(r['f1_ci'])
                   else f"{r['f1_mean']:.3f}")
             print(f"{name} & {fmt_pct(r['acc_mean'], r['acc_ci'])} & {f1} \\\\")
+
+    if args.paired:
+        pt = paired_tests(df)
+        print("\nPaired comparison with the proposed model ('full', unperturbed) over the shared splits:\n"
+              "delta_points = mean accuracy difference in percentage points; p = paired t-test\n",
+              pt.round(4).to_string(index=False))
+        if {"pc_acc", "pc_only"} <= set(df["tag"]):
+            d, pv = pair_test(df, "pc_acc", "pc_only")
+            print(f"\npc_acc - pc_only: {d:+.2f} points, paired t-test p = {pv:.2g}")
+        print("\nErrors pooled over the five test subsets, per model "
+              "(group = Ussak-Huseyni-Muhayyer):\n", group_errors(rows).round(3).to_string(index=False))
 
     if args.tag:
         rows_main = [r for r in rows if not r.get("perturbation")]

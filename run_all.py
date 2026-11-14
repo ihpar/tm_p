@@ -145,7 +145,9 @@ def stage_figures(args, log):
         subprocess.run([PY, "aggregate_results.py", "--latex"], stdout=f, check=True)
     with open(os.path.join("results", "full_pooled.txt"), "w") as f:
         subprocess.run([PY, "aggregate_results.py", "--tag", "full"], stdout=f, check=True)
-    print("\nwrote results/summary.txt and results/full_pooled.txt")
+    with open(os.path.join("results", "paired_tests.txt"), "w") as f:
+        subprocess.run([PY, "aggregate_results.py", "--paired"], stdout=f, check=True)
+    print("\nwrote results/summary.txt, results/full_pooled.txt and results/paired_tests.txt")
 
 
 STAGES = {

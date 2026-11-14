@@ -17,7 +17,7 @@ for the duration analysis.
 | `faithfulness.py` | deletion tests and attention-saliency rank correlation |
 | `attention_analysis.py` | note-level attention table, pitch enrichment, piece-level duration and measure-position statistics, figures |
 | `results_figure.py`, `extra_figures.py`, `figstyle.py` | overview figure; confusion matrix, example piece, length histogram, makam distribution; shared figure style |
-| `aggregate_results.py` | mean ± SD ± 95 % CI tables, pooled per-class report, confusion matrix |
+| `aggregate_results.py` | mean ± SD ± 95 % CI tables, pooled per-class report, confusion matrix; `--paired` gives the paired differences and paired t-tests against the proposed model (Δ and p of Tables 4 and 7) and the error concentration in the Uşşak–Hüseyni–Muhayyer group per model |
 | `file_parser.py`, `txt_parser.ipynb` | SymbTr `.txt` parser that produced `dataset.pkl` and `vocab.pkl` from `data/txt/` (SymbTr v2.4.3) |
 | `requirements.txt` | `pip freeze` of the environment in which the archived results were produced |
 
@@ -45,7 +45,7 @@ and are identical).
 
 The stages write `results/hparam_search.csv`, `results/<tag>/seed<k>[__<perturbation>].json`,
 `results/faithfulness/`, `results/attention/`, `figs_rev/`, `results/summary.txt` (all accuracies,
-mean ± CI, LaTeX rows) and `results/full_pooled.txt` (per-class report and confusion matrix pooled
+mean ± CI, LaTeX rows), `results/paired_tests.txt` (paired comparisons with the proposed model) and `results/full_pooled.txt` (per-class report and confusion matrix pooled
 over the five test subsets, 875 test classifications of 656 distinct pieces).
 
 Only the checkpoints of `full` and `no_meas` (seeds 0-4), which the attention analyses need, are
