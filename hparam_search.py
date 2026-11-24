@@ -1,78 +1,117 @@
-"""
-Random hyperparameter search for the proposed model (validation set of seed 0 only).
-
-python hparam_search.py --trials 20 --seed 0
-
-Each trial calls run_experiments.py with a sampled configuration and the tag
-hp_<trial>; the selection criterion is validation loss of the best epoch
-(the same criterion used for early stopping), with validation accuracy
-reported for reference.  Results are collected in results/hparam_search.csv.
-Nothing from the test set is used for the selection.
-"""
-
 import os
-import json
-import glob
 import random
-import argparse
-import sys
-import subprocess
 import pandas as pd
 
-SPACE = {
-    "hidden": [64, 128, 256],
-    "emb_dim": [16, 32, 64],
-    "lr": [1e-3, 5e-4],
-    "dropout": [0.2, 0.3, 0.5],
-    "batch_size": [8, 16],
-}
+from constants import *
+from experiments import run_experiment
+from disk_utils import get_result_path, load_json
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--trials", type=int, default=20)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--search_seed", type=int, default=123)
-    ap.add_argument("--results_dir", default="results")
-    ap.add_argument("--extra", default="", help="extra args passed to run_experiments.py")
-    args = ap.parse_args()
+def sample_search_configs(
+    num_trials=NUM_SEARCH_TRIALS,
+    search_seed=SEARCH_SEED
+):
+    """
+    Draws the hyperparameter configurations of the random search.
+    Trial 0 is always the configuration that was fixed beforehand.
 
-    rng = random.Random(args.search_seed)
-    configs, seen = [], set()
-    # always include the configuration of the original submission as trial 0
-    base = {"hidden": 128, "emb_dim": 32, "lr": 1e-3, "dropout": 0.3, "batch_size": 8}
-    configs.append(base)
-    seen.add(tuple(base.values()))
-    while len(configs) < args.trials:
-        c = {k: rng.choice(v) for k, v in SPACE.items()}
-        if tuple(c.values()) not in seen:
-            seen.add(tuple(c.values()))
-            configs.append(c)
+    returns List[dict], one configuration per trial
+    """
+    rng = random.Random(search_seed)
+
+    base_config = {
+        "lstm_hidden": LSTM_HIDDEN,
+        "emb_dim": EMB_DIM,
+        "learning_rate": LEARNING_RATE,
+        "dropout": DROPOUT,
+        "batch_size": BATCH_SIZE
+    }
+
+    configs = [base_config]
+    seen = set()
+    seen.add(tuple(base_config.values()))
+
+    while len(configs) < num_trials:
+        config = {}
+        for name, choices in SEARCH_SPACE.items():
+            config[name] = rng.choice(choices)
+
+        # skip a configuration that was already drawn
+        if tuple(config.values()) in seen:
+            continue
+
+        seen.add(tuple(config.values()))
+        configs.append(config)
+
+    return configs
+
+
+def run_hyperparameter_search(
+    device,
+    num_trials=NUM_SEARCH_TRIALS,
+    seed=0,
+    search_seed=SEARCH_SEED,
+    num_epochs=NUM_EPOCHS,
+    max_train_batches=None,
+    results_dir=RESULTS_DIR,
+    split_dir=SPLIT_DIR
+):
+    """
+    Random search over the hyperparameters of the proposed model, on the
+    split of `seed` only.
+
+    Trial i is trained with the tag hp_<i>. The configurations are compared
+    by the validation loss of their best epoch, the same criterion that is
+    used for early stopping. The test subset is not used for the selection.
+
+    The table of all trials is written to <results_dir>/hparam_search.csv
+
+    returns the table, sorted by validation loss
+    """
+    configs = sample_search_configs(num_trials, search_seed)
 
     rows = []
-    for i, c in enumerate(configs):
-        tag = f"hp_{i:02d}"
-        json_path = os.path.join(args.results_dir, tag, f"seed{args.seed}.json")
-        if not os.path.exists(json_path):
-            cmd = [sys.executable, "run_experiments.py", "--tag", tag, "--seed", str(args.seed),
-                   "--hidden", str(c["hidden"]), "--emb_dim", str(c["emb_dim"]),
-                   "--lr", str(c["lr"]), "--dropout", str(c["dropout"]),
-                   "--batch_size", str(c["batch_size"])] + args.extra.split()
-            print(" ".join(cmd))
-            subprocess.run(cmd, check=True)
-        with open(json_path) as f:
-            r = json.load(f)
-        best = min(r["history"], key=lambda h: h["val_loss"]) if r["history"] else {}
-        rows.append({**c, "trial": i, "best_epoch": r["best_epoch"],
-                     "val_loss": best.get("val_loss"), "val_acc": best.get("val_acc"),
-                     "n_params": r["n_params"], "seconds": round(r["train_seconds"])})
-        pd.DataFrame(rows).to_csv(os.path.join(args.results_dir, "hparam_search.csv"), index=False)
+    for trial, config in enumerate(configs):
+        tag = f"hp_{trial:02d}"
+
+        run_experiment(
+            tag=tag,
+            seed=seed,
+            device=device,
+            lstm_hidden=config["lstm_hidden"],
+            emb_dim=config["emb_dim"],
+            learning_rate=config["learning_rate"],
+            dropout=config["dropout"],
+            batch_size=config["batch_size"],
+            num_epochs=num_epochs,
+            max_train_batches=max_train_batches,
+            results_dir=results_dir,
+            split_dir=split_dir,
+            skip_if_done=True
+        )
+
+        result = load_json(get_result_path(tag, seed, None, results_dir))
+
+        # the epoch with the lowest validation loss
+        best = None
+        for epoch_stats in result["history"]:
+            if best is None or epoch_stats["val_loss"] < best["val_loss"]:
+                best = epoch_stats
+
+        row = dict(config)
+        row["trial"] = trial
+        row["best_epoch"] = result["best_epoch"]
+        row["val_loss"] = best["val_loss"]
+        row["val_acc"] = best["val_acc"]
+        row["n_params"] = result["n_params"]
+        row["seconds"] = round(result["train_seconds"])
+        rows.append(row)
+
+        # write the table after every trial, so that nothing is lost if
+        # the search is interrupted
+        df = pd.DataFrame(rows)
+        df.to_csv(os.path.join(results_dir, "hparam_search.csv"), index=False)
 
     df = pd.DataFrame(rows).sort_values("val_loss")
-    pd.set_option("display.width", 200)
-    print("\nSearch results sorted by validation loss:\n", df.to_string(index=False))
-    print("\nSelected configuration:\n", df.iloc[0].to_dict())
 
-
-if __name__ == "__main__":
-    main()
+    return df

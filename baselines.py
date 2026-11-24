@@ -1,154 +1,302 @@
-"""
-Non-neural baselines on exactly the same stratified splits as the BiLSTM runs.
-
-Feature sets
-  hist53_dur   duration-weighted pitch-class histogram at komma resolution
-               (53 bins; octave folded; rests excluded)          <- requested by R2
-  hist53_cnt   occurrence-count pitch-class histogram, 53 bins
-  hist_abs_dur duration-weighted histogram of absolute pitches (octave kept,
-               265 bins) -- closest to what the neural model actually sees
-  bigram       TF-IDF of absolute-pitch bigrams (a minimal sequence baseline)
-
-Classifiers (hyper-parameters chosen on the validation set, then the model
-fitted on the training set is evaluated once on the test set)
-  logreg, svm_rbf, rf, knn
-
-python baselines.py --seeds 0 1 2 3 4
-python aggregate_results.py            # the json files are in results/<feature>__<clf>/
-"""
-
-import os
-import json
-import argparse
 import numpy as np
-from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
 
-from dataset import (load_pieces, make_split_indices, read_split_files, write_split_files,
-                     komma_index, PC_VOCAB, MAKAM_VOCAB)
-from run_experiments import metrics
+from constants import *
+from utils import classification_metrics
+from disk_utils import get_result_path, is_done, save_json
+from dataset import (
+    load_pieces,
+    get_split,
+    get_duration_values,
+    komma_index
+)
 
-MAKAM_NAMES = [k for k, _ in sorted(MAKAM_VOCAB.items(), key=lambda kv: kv[1])]
-N_OCT = 5  # octaves 3..7 in the vocabulary
+# Feature sets
+#   hist53_dur    duration-weighted pitch-class histogram at komma resolution
+#                 (53 bins, octave folded, rests excluded)
+#   hist53_cnt    occurrence-count pitch-class histogram, 53 bins
+#   hist_abs_dur  duration-weighted histogram of absolute pitches
+#                 (octave kept, 5 octaves x 53 = 265 bins)
+#   bigram        TF-IDF of absolute-pitch bigrams
+FEATURE_KINDS = ["hist53_dur", "hist53_cnt", "hist_abs_dur", "bigram"]
+
+# Classifiers
+CLASSIFIER_NAMES = ["logreg", "svm_rbf", "rf", "knn"]
 
 
-def piece_features(piece, dur_inv, kind):
-    notes = piece["notes"]
-    if kind == "bigram":
-        toks = []
-        for pc, acc, octv, dur, meas in notes:
-            k = komma_index(pc, acc, octv)
-            toks.append("R" if k is None else str(k))
-        return " ".join(f"{a}_{b}" for a, b in zip(toks[:-1], toks[1:]))
+# ---------------------------------------------------------------------------
+# Features
+# ---------------------------------------------------------------------------
+def pitch_histogram(piece, dur_values, weight_by_duration, keep_octave):
+    """
+    Normalised pitch histogram of one piece. Rests are left out.
 
-    if kind == "hist_abs_dur":
-        h = np.zeros(53 * N_OCT)
+    weight_by_duration: True  -> every note counts with its relative duration
+                        False -> every note counts as 1
+    keep_octave:        True  -> absolute pitches (265 bins)
+                        False -> pitch classes, octave folded (53 bins)
+    """
+    if keep_octave:
+        histogram = np.zeros(KOMMAS_PER_OCTAVE * NUM_OCTAVES)
     else:
-        h = np.zeros(53)
-    for pc, acc, octv, dur, meas in notes:
-        k = komma_index(pc, acc, octv)
-        if k is None:
-            continue  # rest
-        w = dur_inv[dur] if kind.endswith("_dur") else 1.0
-        if kind == "hist_abs_dur":
-            idx = k - 3 * 53
-            if 0 <= idx < len(h):
-                h[idx] += w
+        histogram = np.zeros(KOMMAS_PER_OCTAVE)
+
+    for pc, acc, octave, dur, meas in piece["notes"]:
+        komma = komma_index(pc, acc, octave)
+        if komma is None:
+            # rest
+            continue
+
+        if weight_by_duration:
+            weight = dur_values[dur]
         else:
-            h[k % 53] += w
-    s = h.sum()
-    return h / s if s > 0 else h
+            weight = 1.0
+
+        if keep_octave:
+            bin_idx = komma - LOWEST_OCTAVE * KOMMAS_PER_OCTAVE
+            if 0 <= bin_idx < len(histogram):
+                histogram[bin_idx] += weight
+        else:
+            histogram[komma % KOMMAS_PER_OCTAVE] += weight
+
+    total = histogram.sum()
+    if total > 0:
+        histogram = histogram / total
+
+    return histogram
 
 
-def build_matrix(pieces, idx, dur_inv, kind):
-    feats = [piece_features(pieces[i], dur_inv, kind) for i in idx]
-    return feats if kind == "bigram" else np.vstack(feats)
+def pitch_bigram_text(piece):
+    """
+    The piece as a text of pitch bigrams, e.g. "252_261 261_252 252_R ..."
+    Every pitch is its absolute komma index, a rest is "R".
+    """
+    tokens = []
+    for pc, acc, octave, dur, meas in piece["notes"]:
+        komma = komma_index(pc, acc, octave)
+        if komma is None:
+            tokens.append("R")
+        else:
+            tokens.append(str(komma))
+
+    bigrams = []
+    for first, second in zip(tokens[:-1], tokens[1:]):
+        bigrams.append(f"{first}_{second}")
+
+    return " ".join(bigrams)
 
 
-def classifier_grid(name):
-    if name == "logreg":
-        return [("C", c, make_pipeline(StandardScaler(), LogisticRegression(C=c, max_iter=5000)))
-                for c in (0.01, 0.1, 1, 10, 100)]
-    if name == "svm_rbf":
-        return [("C,gamma", f"{c},{g}", make_pipeline(StandardScaler(), SVC(C=c, gamma=g)))
-                for c in (0.1, 1, 10, 100) for g in ("scale", 0.01, 0.001)]
-    if name == "rf":
-        return [("min_samples_leaf", m, RandomForestClassifier(
-            n_estimators=500, min_samples_leaf=m, random_state=0, n_jobs=-1)) for m in (1, 2, 5)]
-    if name == "knn":
-        return [("k", k, make_pipeline(StandardScaler(), KNeighborsClassifier(n_neighbors=k)))
-                for k in (1, 3, 5, 9, 15)]
-    raise ValueError(name)
+def build_features(pieces, indices, dur_values, feature_kind):
+    """
+    Features of the pieces with the given indices.
+    returns a matrix (histograms) or a list of texts (bigrams)
+    """
+    if feature_kind == "bigram":
+        return [pitch_bigram_text(pieces[i]) for i in indices]
 
-
-def run(kind, clf_name, pieces, labels, dur_inv, split, seed, results_dir):
-    tr, va, te = split
-    y = np.asarray(labels)
-    Xtr, Xva, Xte = (build_matrix(pieces, s, dur_inv, kind) for s in (tr, va, te))
-    if kind == "bigram":
-        vec = TfidfVectorizer(token_pattern=r"\S+", min_df=2, sublinear_tf=True)
-        Xtr = vec.fit_transform(Xtr)
-        Xva, Xte = vec.transform(Xva), vec.transform(Xte)
-        grid = [(n, v, (clf.steps[-1][1] if hasattr(clf, "steps") else clf))
-                for n, v, clf in classifier_grid(clf_name)]  # sparse: no scaler
+    if feature_kind == "hist53_dur":
+        weight_by_duration, keep_octave = True, False
+    elif feature_kind == "hist53_cnt":
+        weight_by_duration, keep_octave = False, False
+    elif feature_kind == "hist_abs_dur":
+        weight_by_duration, keep_octave = True, True
     else:
-        grid = classifier_grid(clf_name)
+        raise ValueError(f"Unknown feature kind: {feature_kind}")
 
-    best = None
-    for pname, pval, clf in grid:
-        clf.fit(Xtr, y[tr])
-        va_acc = accuracy_score(y[va], clf.predict(Xva))
-        if best is None or va_acc > best[0]:
-            best = (va_acc, pname, pval, clf)
-    va_acc, pname, pval, clf = best
-    preds = clf.predict(Xte).tolist()
-    m = metrics(y[te].tolist(), preds)
-    tag = f"{kind}__{clf_name}"
-    out_dir = os.path.join(results_dir, tag)
-    os.makedirs(out_dir, exist_ok=True)
-    result = {"tag": tag, "seed": seed, "perturbation": None,
-              "args": {"features": kind, "classifier": clf_name, "selected": {pname: str(pval)}},
-              "best_epoch": None, "history": [], "train_seconds": 0, "n_params": None,
-              "val_accuracy": va_acc, "test": m,
-              "test_files": [pieces[i]["f_name"] for i in te],
-              "test_labels": y[te].tolist(), "test_preds": preds,
-              "test_lengths": [len(pieces[i]["notes"]) for i in te]}
-    with open(os.path.join(out_dir, f"seed{seed}.json"), "w") as f:
-        json.dump(result, f)
-    print(f"[{tag} s{seed}] val {va_acc:.4f} ({pname}={pval}) | TEST acc {m['accuracy']:.4f} "
-          f"macro-F1 {m['macro_f1']:.4f}")
+    histograms = []
+    for i in indices:
+        histograms.append(pitch_histogram(
+            pieces[i], dur_values, weight_by_duration, keep_octave))
+
+    return np.vstack(histograms)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
-    ap.add_argument("--features", nargs="+",
-                    default=["hist53_dur", "hist53_cnt", "hist_abs_dur", "bigram"])
-    ap.add_argument("--classifiers", nargs="+", default=["logreg", "svm_rbf", "rf", "knn"])
-    ap.add_argument("--results_dir", default="results")
-    ap.add_argument("--split_dir", default="splits")
-    args = ap.parse_args()
+# ---------------------------------------------------------------------------
+# Classifiers
+# ---------------------------------------------------------------------------
+def get_classifier_grid(classifier_name, scale_features=True):
+    """
+    The candidate settings of one classifier.
+    returns List[(parameter name, parameter value, classifier)]
 
+    scale_features: False leaves out the StandardScaler (for sparse TF-IDF)
+    """
+    def with_scaler(classifier):
+        if scale_features:
+            return make_pipeline(StandardScaler(), classifier)
+        return classifier
+
+    grid = []
+
+    if classifier_name == "logreg":
+        for C in [0.01, 0.1, 1, 10, 100]:
+            classifier = LogisticRegression(C=C, max_iter=5000)
+            grid.append(("C", C, with_scaler(classifier)))
+
+    elif classifier_name == "svm_rbf":
+        for C in [0.1, 1, 10, 100]:
+            for gamma in ["scale", 0.01, 0.001]:
+                classifier = SVC(C=C, gamma=gamma)
+                grid.append(("C,gamma", f"{C},{gamma}", with_scaler(classifier)))
+
+    elif classifier_name == "rf":
+        for min_samples_leaf in [1, 2, 5]:
+            classifier = RandomForestClassifier(
+                n_estimators=500,
+                min_samples_leaf=min_samples_leaf,
+                random_state=0,
+                n_jobs=-1
+            )
+            # a random forest does not need scaled features
+            grid.append(("min_samples_leaf", min_samples_leaf, classifier))
+
+    elif classifier_name == "knn":
+        for k in [1, 3, 5, 9, 15]:
+            classifier = KNeighborsClassifier(n_neighbors=k)
+            grid.append(("k", k, with_scaler(classifier)))
+
+    else:
+        raise ValueError(f"Unknown classifier: {classifier_name}")
+
+    return grid
+
+
+# ---------------------------------------------------------------------------
+# Experiments
+# ---------------------------------------------------------------------------
+def run_baseline(
+    feature_kind,
+    classifier_name,
+    seed,
+    pieces,
+    labels,
+    dur_values,
+    results_dir=RESULTS_DIR,
+    split_dir=SPLIT_DIR,
+    skip_if_done=True
+):
+    """
+    Trains one baseline on the split of `seed` and tests it once.
+
+    Every candidate setting of the classifier is fitted on the training
+    subset. The one with the highest validation accuracy is tested.
+
+    The results are written to
+    <results_dir>/<feature_kind>__<classifier_name>/seed<seed>.json
+    """
+    tag = f"{feature_kind}__{classifier_name}"
+
+    if skip_if_done and is_done(tag, seed, None, results_dir):
+        print(f"[{tag} s{seed}] already done, skipping")
+        return None
+
+    train_idx, val_idx, test_idx = get_split(pieces, labels, seed, split_dir)
+    y = np.asarray(labels)
+
+    X_train = build_features(pieces, train_idx, dur_values, feature_kind)
+    X_val = build_features(pieces, val_idx, dur_values, feature_kind)
+    X_test = build_features(pieces, test_idx, dur_values, feature_kind)
+
+    if feature_kind == "bigram":
+        vectorizer = TfidfVectorizer(
+            token_pattern=r"\S+", min_df=2, sublinear_tf=True)
+        X_train = vectorizer.fit_transform(X_train)
+        X_val = vectorizer.transform(X_val)
+        X_test = vectorizer.transform(X_test)
+        # TF-IDF features are sparse: no scaler
+        grid = get_classifier_grid(classifier_name, scale_features=False)
+    else:
+        grid = get_classifier_grid(classifier_name, scale_features=True)
+
+    # select the setting with the highest validation accuracy
+    best_val_acc = None
+    best_param_name = None
+    best_param_value = None
+    best_classifier = None
+
+    for param_name, param_value, classifier in grid:
+        classifier.fit(X_train, y[train_idx])
+        val_acc = accuracy_score(y[val_idx], classifier.predict(X_val))
+
+        if best_val_acc is None or val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_param_name = param_name
+            best_param_value = param_value
+            best_classifier = classifier
+
+    test_labels = y[test_idx].tolist()
+    test_preds = best_classifier.predict(X_test).tolist()
+    test_metrics = classification_metrics(test_labels, test_preds)
+
+    result = {
+        "tag": tag,
+        "seed": seed,
+        "perturbation": None,
+        "config": {
+            "features": feature_kind,
+            "classifier": classifier_name,
+            "selected": {best_param_name: str(best_param_value)}
+        },
+        "best_epoch": None,
+        "history": [],
+        "train_seconds": 0,
+        "n_params": None,
+        "val_accuracy": best_val_acc,
+        "test": test_metrics,
+        "test_files": [pieces[i]["f_name"] for i in test_idx],
+        "test_labels": test_labels,
+        "test_preds": test_preds,
+        "test_lengths": [len(pieces[i]["notes"]) for i in test_idx]
+    }
+    save_json(result, get_result_path(tag, seed, None, results_dir))
+
+    print(
+        f"[{tag} s{seed}] "
+        f"Val Acc: {best_val_acc:.4f} ({best_param_name}={best_param_value}) | "
+        f"Test Acc: {test_metrics['accuracy']:.4f} | "
+        f"Macro-F1: {test_metrics['macro_f1']:.4f}"
+    )
+
+    return result
+
+
+def run_baselines(
+    seeds=SEEDS,
+    feature_kinds=FEATURE_KINDS,
+    classifier_names=CLASSIFIER_NAMES,
+    results_dir=RESULTS_DIR,
+    split_dir=SPLIT_DIR,
+    skip_if_done=True
+):
+    """
+    Runs every combination of feature set and classifier on every split.
+    """
     pieces, labels, vocab = load_pieces()
-    dur_inv = {v: k for k, v in vocab["dur"].items()}
-    dur_inv[0] = 0.0
-    for seed in args.seeds:
-        split = read_split_files(pieces, seed, args.split_dir)
-        if split is None:
-            split = make_split_indices(labels, seed)
-            write_split_files(pieces, split, seed, args.split_dir)
-        for kind in args.features:
-            for clf in args.classifiers:
-                if kind == "bigram" and clf in ("rf", "knn"):
-                    continue  # slow / uninformative on sparse tf-idf; keep logreg & svm
-                run(kind, clf, pieces, labels, dur_inv, split, seed, args.results_dir)
+    dur_values = get_duration_values(vocab)
 
+    for seed in seeds:
+        for feature_kind in feature_kinds:
+            for classifier_name in classifier_names:
+                # random forest and k-NN are slow and uninformative on
+                # sparse TF-IDF features: bigrams use logreg and SVM only
+                if feature_kind == "bigram" and classifier_name in ["rf", "knn"]:
+                    continue
 
-if __name__ == "__main__":
-    main()
+                run_baseline(
+                    feature_kind,
+                    classifier_name,
+                    seed,
+                    pieces,
+                    labels,
+                    dur_values,
+                    results_dir=results_dir,
+                    split_dir=split_dir,
+                    skip_if_done=skip_if_done
+                )

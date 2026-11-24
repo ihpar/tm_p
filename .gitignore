@@ -1,10 +1,18 @@
 __pycache__/
+.ipynb_checkpoints/
 .DS_Store
+
+# Trained models: only those that the attention analysis needs are archived
 results/**/*.pt
 !results/full/*.pt
 !results/no_meas/*.pt
-results_old_*/
-figs_rev_old_*/
+results_archive/**/*.pt
+!results_archive/full/*.pt
+!results_archive/no_meas/*.pt
+
+# Dry runs (QUICK_TEST = True in the notebooks)
+results_quick_test/
+figs_quick_test/
+
 log_*.txt
 nohup.out
-.DS_Store
