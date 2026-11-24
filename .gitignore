@@ -6,9 +6,6 @@ __pycache__/
 results/**/*.pt
 !results/full/*.pt
 !results/no_meas/*.pt
-results_archive/**/*.pt
-!results_archive/full/*.pt
-!results_archive/no_meas/*.pt
 
 # Dry runs (QUICK_TEST = True in the notebooks)
 results_quick_test/

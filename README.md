@@ -8,6 +8,18 @@ Tag `jnmr-r1` marks the state of the first revision. Two earlier trainings of th
 pipeline, which the paper refers to for the duration analysis, are kept in the history of
 the repository: tag `jnmr-r1-prelim` (non-deterministic run) and commit `0dbc397`.
 
+## Data
+
+`data/txt/` holds the score files of [SymbTr](https://github.com/MTG/SymbTr) v2.4.3
+(release tag `v2.4.3`), unchanged. `dataset.pkl` and `vocab.pkl` are derived from them.
+SymbTr is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License (CC BY-NC-SA 4.0); the score files and the files derived from them
+are redistributed here under the same license. If you use them, please cite:
+
+> M. K. Karaosmanoğlu (2012). A Turkish makam music symbolic database for music
+> information retrieval: SymbTr. In Proceedings of the 13th International Society for
+> Music Information Retrieval Conference (ISMIR), pp. 223-228.
+
 ## How to run
 
 ```bash
