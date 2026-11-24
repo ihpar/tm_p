@@ -1,400 +1,559 @@
+import os
 import numpy as np
-import pandas as pd
-import seaborn as sns
-from matplotlib import ticker
 import matplotlib.pyplot as plt
-from attention_inspector import AttentionInspector
+from collections import Counter
+from matplotlib.patches import Patch
+
+from constants import *
+from pitch_names import get_symbtr_name, with_accidental_symbols
+
+OCT_ID_TO_VALUE = {v: k for k, v in OCT_VOCAB.items()}
+
+# Rows of the results overview figure: (tag, perturbation, label, group)
+OVERVIEW_ROWS = [
+    ("full", "", "BiLSTM-attention (proposed)", "model"),
+    ("full_unpacked", "", "  same, unpacked LSTM (preliminary version)", "model"),
+    ("max_pool", "", "BiLSTM, max pooling", "model"),
+    ("mean_pool", "", "BiLSTM, mean pooling", "model"),
+    ("last_pool", "", "BiLSTM, last states", "model"),
+    ("hist_abs_dur__svm_rbf", "", "Abs.-pitch histogram (dur.-weighted) + SVM", "baseline"),
+    ("hist53_dur__logreg", "", "53-bin pitch-class histogram (dur.-weighted) + LR", "baseline"),
+    ("hist53_dur__svm_rbf", "", "53-bin pitch-class histogram (dur.-weighted) + SVM", "baseline"),
+    ("hist53_cnt__logreg", "", "53-bin pitch-class histogram (counts) + LR", "baseline"),
+    ("bigram__svm_rbf", "", "Pitch-bigram TF-IDF + SVM", "baseline"),
+    ("no_dur", "", "− duration", "ablation"),
+    ("no_meas", "", "− measure position", "ablation"),
+    ("no_rhythm", "", "− duration − measure position", "ablation"),
+    ("no_oct", "", "− octave", "ablation"),
+    ("pc_acc", "", "pitch class + accidental only", "ablation"),
+    ("pc_only", "", "pitch class only", "ablation"),
+    ("interval", "", "interval representation (+dur, meas)", "invariance"),
+    ("interval_only", "", "interval representation only", "invariance"),
+    ("transpose_aug", "", "abs. pitch + transposition augmentation", "invariance"),
+    ("transpose_aug", "transpose+4", "  same, tested transposed +4 kommas", "invariance"),
+    ("transpose_aug", "transpose+9", "  same, tested transposed +9 kommas", "invariance"),
+    ("full", "transpose+4", "proposed, tested transposed +4 kommas", "control"),
+    ("full", "transpose+9", "proposed, tested transposed +9 kommas", "control"),
+    ("full", "transpose-9", "proposed, tested transposed −9 kommas", "control"),
+    ("full", "shuffle", "proposed, tested on shuffled note order", "control"),
+    ("train_shuffle", "shuffle", "trained and tested on shuffled order", "control")
+]
+
+OVERVIEW_GROUP_COLORS = {
+    "model": "#3182bd",
+    "baseline": "#636363",
+    "ablation": "#e6550d",
+    "invariance": "#31a354",
+    "control": "#756bb1"
+}
+
+DELETION_ORDER_LABELS = {
+    "attn_top": "highest attention first",
+    "grad_top": "highest saliency first",
+    "random": "random",
+    "attn_bottom": "lowest attention first"
+}
+
+# deletion order -> (marker, line style)
+DELETION_ORDER_STYLES = {
+    "attn_top": ("o", "-"),
+    "grad_top": ("s", "-"),
+    "random": ("^", "--"),
+    "attn_bottom": ("v", ":")
+}
 
 
 class PlotManager:
-    def __init__(self):
-        pass
+    def __init__(self, figs_dir=FIGS_DIR):
+        self.figs_dir = figs_dir
 
-    def plot_confusion_matrix(
+        # the same sans-serif font and font sizes in every figure,
+        # fonts embedded as TrueType in the PDF files
+        plt.rcParams.update({
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Liberation Sans", "DejaVu Sans"],
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "font.size": 9,
+            "axes.titlesize": 9,
+            "axes.labelsize": 9,
+            "xtick.labelsize": 8,
+            "ytick.labelsize": 8,
+            "legend.fontsize": 8
+        })
+
+    def _finish(self, fig, f_name, save_fig):
+        """
+        Saves the figure as <figs_dir>/<f_name>.pdf and .png if save_fig is
+        True, then shows it.
+        """
+        if save_fig:
+            os.makedirs(self.figs_dir, exist_ok=True)
+            fig.savefig(os.path.join(self.figs_dir, f"{f_name}.pdf"))
+            fig.savefig(os.path.join(self.figs_dir, f"{f_name}.png"), dpi=200)
+        plt.show()
+        plt.close(fig)
+
+    # -----------------------------------------------------------------------
+    # Dataset
+    # -----------------------------------------------------------------------
+    def plot_makam_distribution(self, labels, save_fig=False):
+        """
+        Number of pieces per makam.
+        labels: List[int], the makam label of every piece
+        """
+        counts = Counter(labels)
+        # most frequent makam first
+        order = sorted(counts, key=lambda label: -counts[label])
+
+        names = [MAKAM_DISPLAY_NAMES[MAKAM_NAMES[label]] for label in order]
+        values = [counts[label] for label in order]
+
+        fig, ax = plt.subplots(figsize=(7, 3.4))
+        ax.bar(names, values, color="#6baed6", edgecolor="white")
+
+        for i, value in enumerate(values):
+            ax.text(i, value + 2, str(value), ha="center", fontsize=8)
+
+        ax.set_ylabel("Number of pieces")
+        ax.set_ylim(0, max(values) * 1.12)
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=9)
+
+        fig.tight_layout()
+        self._finish(fig, "distribution", save_fig)
+
+    def plot_length_histogram(self, pieces, save_fig=False):
+        """
+        Number of notes per piece, on a logarithmic axis.
+        Dashed lines: median (black) and 95th percentile (red).
+        """
+        lengths = np.array([len(piece["notes"]) for piece in pieces])
+
+        # The axis is logarithmic, so the bins are logarithmically spaced.
+        bins = np.logspace(
+            np.log10(lengths.min()), np.log10(lengths.max()), 36)
+
+        fig, ax = plt.subplots(figsize=(5.5, 3.2))
+        ax.hist(lengths, bins=bins, color="#9ecae1", edgecolor="white")
+
+        ax.axvline(np.median(lengths), color="k", ls="--", lw=1)
+        ax.axvline(np.percentile(lengths, 95), color="#d62728", ls="--", lw=1)
+
+        ax.set_xlabel("Notes per piece")
+        ax.set_ylabel("Pieces")
+        ax.set_xscale("log")
+        ax.set_xlim(lengths.min() * 0.9, lengths.max() * 1.1)
+
+        fig.tight_layout()
+        self._finish(fig, "length_hist", save_fig)
+
+        print(
+            f"Lengths | min: {lengths.min()}, "
+            f"median: {np.median(lengths):.1f}, "
+            f"mean: {lengths.mean():.1f}, "
+            f"95th percentile: {np.percentile(lengths, 95):.1f}, "
+            f"max: {lengths.max()}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Classification results
+    # -----------------------------------------------------------------------
+    def plot_results_overview(self, summary, save_fig=False):
+        """
+        Mean test accuracy with 95% CI of every model and control.
+        summary: DataFrame from result_tables.summary_table
+        """
+        summary = summary.set_index(["tag", "perturbation"])
+        chance = 100 / NUM_CLASSES
+
+        # (label, group, mean accuracy %, CI half-width %, number of splits)
+        items = []
+        for tag, perturbation, label, group in OVERVIEW_ROWS:
+            if (tag, perturbation) not in summary.index:
+                continue
+
+            row = summary.loc[(tag, perturbation)]
+            accuracy = 100 * row["acc_mean"]
+            if np.isnan(row["acc_ci"]):
+                ci = 0
+            else:
+                ci = 100 * row["acc_ci"]
+
+            items.append((label, group, accuracy, ci, int(row["n"])))
+
+        if len(items) == 0:
+            print("Nothing to plot")
+            return
+
+        fig, ax = plt.subplots(figsize=(8, 0.32 * len(items) + 1.2))
+
+        # first row at the top
+        y_positions = np.arange(len(items))[::-1]
+
+        for y, (label, group, accuracy, ci, n) in zip(y_positions, items):
+            ax.barh(y, accuracy, color=OVERVIEW_GROUP_COLORS[group], alpha=0.85)
+            ax.errorbar(accuracy, y, xerr=ci, fmt="none",
+                        ecolor="k", capsize=2, lw=0.8)
+
+            text = f"{accuracy:.1f}"
+            if ci:
+                text += f" ± {ci:.1f}"
+            if n < 5:
+                text += f"  (n={n})"
+            ax.text(min(accuracy + ci + 0.8, 99), y, text,
+                    va="center", fontsize=7.5)
+
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels([item[0] for item in items], fontsize=8.5)
+
+        ax.axvline(chance, color="k", ls=":", lw=0.8)
+        ax.text(chance + 0.5, y_positions.min() - 0.6, "chance", fontsize=7)
+
+        ax.set_xlim(0, 112)
+        ax.set_xlabel(
+            "Test accuracy (%), mean ± 95% CI over 5 stratified splits")
+
+        groups_present = []
+        for group in OVERVIEW_GROUP_COLORS:
+            if any(item[1] == group for item in items):
+                groups_present.append(group)
+
+        legend_handles = []
+        for group in groups_present:
+            legend_handles.append(
+                Patch(color=OVERVIEW_GROUP_COLORS[group], label=group))
+
+        ax.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.08),
+            fontsize=8,
+            ncol=len(groups_present),
+            frameon=False
+        )
+        ax.grid(axis="x", alpha=0.3)
+
+        fig.tight_layout()
+        self._finish(fig, "results_overview", save_fig)
+
+    def plot_confusion_matrix(self, cm, save_fig=False):
+        """
+        cm: (12, 12) array of counts, rows = true makam, columns = predicted
+        """
+        cm = np.asarray(cm)
+        names = [MAKAM_DISPLAY_NAMES[makam] for makam in MAKAM_NAMES]
+
+        fig, ax = plt.subplots(figsize=(7.2, 6.4))
+        im = ax.imshow(cm, cmap="Blues")
+
+        for i in range(NUM_CLASSES):
+            for j in range(NUM_CLASSES):
+                if cm[i, j]:
+                    if cm[i, j] > cm.max() / 2:
+                        text_color = "white"
+                    else:
+                        text_color = "black"
+                    ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                            fontsize=8, color=text_color)
+
+        ax.set_xticks(range(NUM_CLASSES))
+        ax.set_yticks(range(NUM_CLASSES))
+        ax.set_xticklabels(names, rotation=60, ha="right", fontsize=8)
+        ax.set_yticklabels(names, fontsize=8)
+        ax.set_xlabel("Predicted makam")
+        ax.set_ylabel("True makam")
+
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        fig.tight_layout()
+        self._finish(fig, "confusion_pooled", save_fig)
+
+    # -----------------------------------------------------------------------
+    # Faithfulness
+    # -----------------------------------------------------------------------
+    def plot_deletion_curves(self, curves, summary, tag, save_fig=False):
+        """
+        Test accuracy after deleting a fraction of the notes of every piece,
+        for the four deletion orders (mean ± SD over the seeds).
+
+        curves, summary: DataFrames from faithfulness.run_deletion_tests
+        """
+        base_accuracy = curves["base_accuracy"].mean()
+
+        fig, ax = plt.subplots(figsize=(5.5, 3.8))
+
+        for order_name in ["attn_top", "grad_top", "random", "attn_bottom"]:
+            rows = summary[summary["order"] == order_name].sort_values("frac")
+
+            # start every curve at 0% deleted = accuracy of the full pieces
+            x = [0] + (rows["frac"] * 100).tolist()
+            y = [base_accuracy] + rows["acc_mean"].tolist()
+            y_err = [0] + rows["acc_sd"].fillna(0).tolist()
+
+            marker, line_style = DELETION_ORDER_STYLES[order_name]
+            ax.errorbar(
+                x,
+                np.array(y) * 100,
+                yerr=np.array(y_err) * 100,
+                marker=marker,
+                ls=line_style,
+                capsize=3,
+                label=DELETION_ORDER_LABELS[order_name]
+            )
+
+        ax.set_xlabel("Notes deleted per piece (%)")
+        ax.set_ylabel("Test accuracy (%)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+        fig.tight_layout()
+        self._finish(fig, f"faithfulness_{tag}", save_fig)
+
+    # -----------------------------------------------------------------------
+    # Attention
+    # -----------------------------------------------------------------------
+    def plot_pitch_enrichment(
         self,
-        cm,
-        class_names,
-        title="Normalized Confusion Matrix",
+        enrichment,
+        tag,
+        pitch_order=False,
         save_fig=False
     ):
-        # Normalize row-wise
-        cm = cm.astype(float)
-        cm_norm = cm / cm.sum(axis=1, keepdims=True)
+        """
+        One panel per makam with its ten most frequent pitches:
+        share of notes (light bars), share of attention (dark bars) and
+        their ratio, the enrichment (line, right axis).
 
-        plt.figure(figsize=(7, 6))
-        sns.set_theme(style="white", font="Times")
+        enrichment:  DataFrame from AttentionInspector.pitch_enrichment
+        pitch_order: False -> pitches ordered by frequency
+                     True  -> pitches ordered by pitch
+        """
+        makams = sorted(enrichment["makam"].unique())
 
-        ax = sns.heatmap(
-            cm_norm,
-            annot=True,
-            fmt=".2f",
-            cmap="Blues",
-            xticklabels=class_names,
-            yticklabels=class_names,
-            linewidths=0.5,
-            linecolor="gray",
-            cbar_kws={"label": "Proportion"},
-            annot_kws={"size": 10}
+        fig, axes = plt.subplots(4, 3, figsize=(12, 13), sharey=False)
+
+        for ax, makam in zip(axes.ravel(), makams):
+            rows = enrichment[enrichment["makam"] == makam]
+            rows = rows.sort_values("occ_share", ascending=False).head(10)
+            if pitch_order:
+                rows = rows.sort_values("komma_class")
+
+            x = np.arange(len(rows))
+            ax.bar(x - 0.2, rows["occ_share"] * 100, 0.4,
+                   label="share of notes", color="#9ecae1")
+            ax.bar(x + 0.2, rows["attn_share"] * 100, 0.4,
+                   label="share of attention", color="#3182bd")
+
+            ax2 = ax.twinx()
+            ax2.plot(x, rows["enrichment"], "k.-", lw=1, label="enrichment")
+            ax2.axhline(1, color="k", ls=":", lw=0.8)
+            ax2.set_ylim(0, max(2.5, rows["enrichment"].max() * 1.1))
+
+            pitch_labels = [
+                with_accidental_symbols(pitch) for pitch in rows["pitch_aeu"]]
+            ax.set_xticks(x)
+            ax.set_xticklabels(pitch_labels, rotation=60, fontsize=8)
+
+            makam_name = MAKAM_DISPLAY_NAMES.get(makam, makam)
+            entropy = rows["attn_entropy_bits"].iloc[0]
+            ax.set_title(f"{makam_name}  (H = {entropy:.2f} bits)", fontsize=10)
+            ax.set_ylabel("%", fontsize=8)
+            ax2.set_ylabel("enrichment", fontsize=8)
+
+        handles, legend_labels = axes[0, 0].get_legend_handles_labels()
+        handles.append(plt.Line2D([], [], color="k", marker=".", lw=1))
+        legend_labels.append("enrichment (attention/occurrence)")
+        fig.legend(handles, legend_labels,
+                   loc="lower center", ncol=3, fontsize=9)
+
+        fig.tight_layout(rect=(0, 0.03, 1, 1))
+
+        f_name = f"enrichment_{tag}"
+        if pitch_order:
+            f_name += "_pitchorder"
+        self._finish(fig, f_name, save_fig)
+
+    def plot_attention_by_duration(self, unit_table, tag, save_fig=False):
+        """
+        Box plot of the per-unit median T * alpha in every duration bin.
+
+        unit_table: DataFrame from AttentionInspector.unit_by_duration_bin
+                    (one row per unit, one column per duration bin)
+        """
+        data = []
+        tick_labels = []
+        for dur_bin in DURATION_BIN_LABELS:
+            values = unit_table[dur_bin].dropna().values
+            data.append(values)
+            tick_labels.append(f"{dur_bin}\n(n={len(values)})")
+
+        fig, ax = plt.subplots(figsize=(7, 3.8))
+        ax.boxplot(data, showfliers=False)
+        ax.axhline(1, color="k", ls=":", lw=0.8)
+
+        ax.set_xticks(range(1, 6))
+        ax.set_xticklabels(tick_labels, fontsize=8)
+        ax.set_ylabel("Per-unit median of T·α")
+
+        fig.tight_layout()
+        self._finish(fig, f"duration_bins_{tag}", save_fig)
+
+    def plot_attention_by_measure_position(self, unit_table, tag, save_fig=False):
+        """
+        Box plot of the per-unit mean T * alpha at the start, in the middle
+        and at the end of the measure.
+
+        unit_table: DataFrame from AttentionInspector.unit_by_measure_position
+                    (one row per unit, one column per measure position)
+        """
+        positions = []
+        for position in ["start", "middle", "end"]:
+            if position in unit_table.columns:
+                positions.append(position)
+
+        data = []
+        tick_labels = []
+        for position in positions:
+            data.append(unit_table[position].dropna().values)
+            tick_labels.append(
+                f"{position}\n(n={unit_table[position].notna().sum()})")
+
+        fig, ax = plt.subplots(figsize=(4, 3.5))
+        ax.boxplot(data, showfliers=False)
+        ax.axhline(1, color="k", ls=":", lw=0.8)
+
+        ax.set_xticks(range(1, len(positions) + 1))
+        ax.set_xticklabels(tick_labels)
+        ax.set_ylabel("Per-unit mean of T·α")
+
+        fig.tight_layout()
+        self._finish(fig, f"measure_position_{tag}", save_fig)
+
+    def _describe_note(self, t, note, dur_values, spelling_map,
+                       use_symbols=True):
+        """
+        "290: B♭4, octave 4, 0.125, middle"
+        (note index, pitch, octave, relative duration, position in measure)
+
+        use_symbols: True writes the accidental as a flat or sharp symbol
+                     (for a figure), False writes "Bb4" (for printing)
+        """
+        pc, acc, octave, dur, meas = note
+
+        pitch = get_symbtr_name(pc, acc, spelling_map)
+        if use_symbols:
+            pitch = with_accidental_symbols(pitch)
+
+        if pc == REST_ID:
+            octave_text = ""
+        else:
+            octave_text = f", octave {OCT_ID_TO_VALUE[octave]}"
+
+        return (
+            f"{t}: {pitch}{octave_text}, "
+            f"{dur_values[dur]:.3g}, {MEAS_ID_TO_NAME[meas]}"
         )
 
-        ax.set_xlabel("Predicted Makam", fontsize=12)
-        ax.set_ylabel("True Makam", fontsize=12)
-        ax.figure.axes[-1].yaxis.label.set_size(12)
-        ax.set_title(title, fontsize=12, pad=12)
-
-        plt.xticks(rotation=90)
-        plt.yticks(rotation=0)
-
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/conf_matrix.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_attention_over_time(
-            self,
-            attn,
-            title="Attention over Notes",
-            save_fig=False
-    ):
-        plt.figure(figsize=(8, 3))
-        plt.plot(attn, linewidth=2)
-        plt.xlabel("Note Index", fontname="Times", fontsize=12)
-        plt.ylabel("Attention Weight", fontname="Times", fontsize=12)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/attn_over_time.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_attention_with_pitch(
-            self,
-            attn,
-            pcs,
-            pc_vocab_inv,
-            save_fig=False
-    ):
-        pitches = [pc_vocab_inv[p] for p in pcs]
-
-        plt.figure(figsize=(24, 3))
-        plt.bar(range(len(attn)), attn)
-        plt.xticks(
-            range(len(pitches)),
-            pitches,
-            rotation=90,
-            fontsize=6,
-            fontname="Times"
-        )
-        plt.xlabel("Note Index", fontname="Times", fontsize=12)
-        plt.ylabel("Attention Weight", fontname="Times", fontsize=12)
-        plt.title("Attention Aligned with Pitch Classes",
-                  fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/pitch_attn.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_attention_with_measures(
-            self,
-            attn,
-            meas,
-            title="Attention with Measure Boundaries",
-            save_fig=False
-    ):
-        plt.figure(figsize=(8, 3))
-        plt.plot(attn, linewidth=2)
-
-        for i, m in enumerate(meas):
-            if m == 3:  # measure end {'PAD': 0, 'start': 1, 'middle': 2, 'end': 3}
-                plt.axvline(i, color="red", alpha=0.2)
-
-        plt.xlabel("Note Index", fontname="Times", fontsize=12)
-        plt.ylabel("Attention Weight", fontname="Times", fontsize=12)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/meas_attn.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_attention_with_combined_pitch(
+    def plot_example_piece(
         self,
+        notes,
         attn,
-        pcs,
-        accs,
-        ai: AttentionInspector,
+        dur_values,
+        spelling_map,
+        num_peaks=EXAMPLE_PIECE_NUM_PEAKS,
         save_fig=False
     ):
-        pitch_labels = [
-            ai.combine_pitch_pc_acc(p, a)
-            for p, a in zip(pcs, accs)
-        ]
+        """
+        Normalised attention T * alpha over the notes of one piece. Red
+        lines mark the measure starts. The highest peaks are annotated
+        with note index, pitch, octave, relative duration and position in
+        the measure.
 
-        plt.figure(figsize=(24, 3))
-        plt.bar(range(len(attn)), attn)
-        plt.xticks(
-            range(len(pitch_labels)),
-            pitch_labels,
-            rotation=90,
-            fontsize=6,
-            fontname="Times"
-        )
-        plt.xlabel("Note Index", fontname="Times", fontsize=12)
-        plt.ylabel("Attention Weight", fontname="Times", fontsize=12)
-        plt.title("Attention Aligned with Combined Pitch Classes",
-                  fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("comb_pitch_attn.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
+        notes: List[Tuple[int,int,int,int,int]]  (pc, acc, oct, dur, meas)
+        attn:  array (T,), attention weights of the piece
+        """
+        T = len(attn)
+        norm_attn = attn * T
 
-    def plot_agg_attention_by_pitch(
-            self,
-            agg,
-            ai: AttentionInspector,
-            title="Aggregated Attention by Pitch + Accidental",
-            save_fig=False
-    ):
-        labels = []
-        values = []
+        measure_starts = []
+        for t, note in enumerate(notes):
+            if note[4] == MEAS_VOCAB["start"]:
+                measure_starts.append(t)
 
-        for (pc, acc), val in sorted(agg.items(), key=lambda x: -x[1]):
-            pc_name = ai.pc_vocab_inv[pc]
-            acc_name = ai.acc_vocab_inv[acc]
-            labels.append(f"{pc_name}{acc_name}")
-            values.append(val)
+        fig, ax = plt.subplots(figsize=(10, 4.2))
 
-        plt.figure(figsize=(5, 3))
-        plt.bar(labels, values)
-        plt.xticks(rotation=45, fontname="Times", fontsize=10)
-        plt.ylabel("Total Attention", fontname="Times", fontsize=12)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/agg_attn_by_pitch_piece.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
+        for t in measure_starts:
+            ax.axvline(t - 0.5, color="#d62728", lw=0.6, alpha=0.5)
 
-    def plot_agg_attention_by_pitch_duration(
-            self,
-            agg,
-            ai: AttentionInspector,
-            title="Duration Weighted Aggregated Attention by Pitch + Accidental",
-            save_fig=False
-    ):
-        labels = []
-        values = []
+        ax.plot(range(T), norm_attn, color="#1f77b4", lw=1)
+        ax.axhline(1, color="k", ls=":", lw=0.8)
 
-        for (pc, acc), val in sorted(agg.items(), key=lambda x: -x[1]):
-            pc_name = ai.pc_vocab_inv[pc]
-            acc_name = ai.acc_vocab_inv[acc]
-            labels.append(f"{pc_name}{acc_name}")
-            values.append(val)
+        # the highest peaks, in the order of the piece
+        peaks = sorted(np.argsort(-attn)[:num_peaks])
+        y_max = norm_attn.max()
 
-        plt.figure(figsize=(5, 3))
-        plt.bar(labels, values)
-        plt.xticks(rotation=45, fontname="Times", fontsize=10)
-        plt.ylabel("Total Attention", fontname="Times", fontsize=12)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/dur_weighted_agg_attn_by_pitch_piece.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
+        # neighbouring peaks share one label
+        max_gap = max(3, T * 0.02)
+        clusters = []
+        current_cluster = [peaks[0]]
+        for t in peaks[1:]:
+            if t - current_cluster[-1] <= max_gap:
+                current_cluster.append(t)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [t]
+        clusters.append(current_cluster)
 
-    def plot_agg_attention_correct_vs_incorrect(
-            self,
-            makam,
-            ai: AttentionInspector,
-            save_fig=False
-    ):
-        agg_c, agg_i, n_c, n_i = ai.aggregate_attention_correct_vs_incorrect(
-            ai.makam_vocab[makam])
+        prev_center = -1e9
+        level = 0
 
-        agg_c = ai.normalize_attention(agg_c)
-        agg_i = ai.normalize_attention(agg_i)
+        for cluster in clusters:
+            lines = []
+            for t in cluster:
+                lines.append(
+                    self._describe_note(t, notes[t], dur_values, spelling_map))
 
-        rows = []
+            center = cluster[len(cluster) // 2]
+            y_top = max(norm_attn[t] for t in cluster)
 
-        for key in set(agg_c.keys()).union(agg_i.keys()):
-            pc, acc = key
-            label = f"{ai.pc_vocab_inv[pc]}{ai.acc_vocab_inv[acc]}"
+            # labels that are close to each other alternate between two heights
+            if center - prev_center < 0.15 * T:
+                level = (level + 1) % 2
+            else:
+                level = 0
+            prev_center = center
 
-            rows.append({
-                "Pitch": label,
-                "Attention": agg_c.get(key, 0),
-                "Type": "Correct"
-            })
-            rows.append({
-                "Pitch": label,
-                "Attention": agg_i.get(key, 0),
-                "Type": "Incorrect"
-            })
-        df = pd.DataFrame(rows)
-        plt.figure(figsize=(7, 3))
-        sns.barplot(data=df, x="Pitch", y="Attention", hue="Type")
-        plt.xticks(rotation=45, fontname="Times", fontsize=10)
-        plt.title(
-            f"Attention by Pitch+Accidental: "
-            f"Correct vs Incorrect ({makam.capitalize()})",
-            fontname="Times", fontsize=12
-        )
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig(f"figs/attn_by_pitch_corr_incorr_{makam}.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
+            if center > 0.85 * T:
+                h_align = "right"
+            elif center < 0.15 * T:
+                h_align = "left"
+            else:
+                h_align = "center"
 
-        entropy_correct = ai.attention_entropy(agg_c)
-        entropy_incorrect = ai.attention_entropy(agg_i)
+            y_text = min(y_top + y_max * (0.1 + 0.22 * level), y_max * 1.2)
 
-        print("Entropy (Correct):", entropy_correct)
-        print("Entropy (Incorrect):", entropy_incorrect)
-
-    def plot_agg_attention_by_pitch_duration_makam(
-            self,
-            makam,
-            ai: AttentionInspector,
-            title="Aggregated Attention by Pitch + Accidental",
-            save_fig=False
-    ):
-        makam_agg, piece_count = ai.aggregate_attention_for_makam(
-            ai.makam_vocab[makam])
-
-        makam_agg = ai.normalize_attention(makam_agg)
-        labels = []
-        values = []
-
-        for (pc, acc), val in sorted(
-            makam_agg.items(), key=lambda x: -x[1]
-        ):
-            labels.append(f"{ai.pc_vocab_inv[pc]}{ai.acc_vocab_inv[acc]}")
-            values.append(val)
-
-        plt.figure(figsize=(4.5, 2.5))
-        plt.bar(labels, values)
-        plt.xticks(rotation=45, fontname="Times", fontsize=10)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.ylabel("Normalized Attention", fontname="Times", fontsize=12)
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig(f"figs/attn_by_pitch_acc_makam_{makam}.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_attention_vs_duration_boxplot(
-            self,
-            df,
-            title="Attention vs Relative Duration (Binned)",
-            save_fig=False
-    ):
-        plt.figure(figsize=(7, 4))
-        # plt.yscale("log")
-
-        sns.boxplot(
-            data=df,
-            x="dur_bin",
-            y="attention",
-            color="skyblue",
-            showfliers=False,
-            medianprops=dict(color="black", linewidth=2)
-        )
-        sns.despine()
-
-        plt.ylim(0, 0.0058)
-
-        # sns.stripplot(
-        #     data=df,
-        #     x="dur_bin",
-        #     y="attention",
-        #     # color="red",
-        #     # size=2,
-        #     alpha=0.25,
-        #     jitter=True
-        # )
-
-        plt.xlabel("Relative duration (binned)",
-                   fontname="Times", fontsize=12)
-        plt.ylabel("Attention weight",
-                   fontname="Times", fontsize=12)
-        plt.title(title, fontname="Times", fontsize=12)
-        plt.xticks(fontname="Times", fontsize=10)
-
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig("figs/attn_vs_dur_box_binned.pdf",
-                        bbox_inches="tight", pad_inches=0.05)
-        plt.show()
-
-    def plot_agg_attn_by_pitch_acc_all_makams(
-        self,
-        makam_list,
-        ai: AttentionInspector,
-        title="Aggregated Attention by Pitch + Accidental for All Makams",
-        save_fig=False
-    ):
-        num_makams = len(makam_list)
-        num_rows = int(np.ceil(num_makams / 2))
-
-        fig, axes = plt.subplots(
-            num_rows,
-            2,
-            figsize=(7, 8.5),
-            sharey="row",
-            constrained_layout=False
-        )
-
-        fig.suptitle(title, fontname="Times", fontsize=12)
-
-        axes = axes.flatten()
-
-        for i in range(num_makams):
-            ax = axes[i]
-
-            makam_agg, piece_count = ai.aggregate_attention_for_makam(
-                ai.makam_vocab[makam_list[i]["id"]]
-            )
-            makam_agg = ai.normalize_attention(makam_agg)
-
-            labels = []
-            values = []
-
-            for (pc, acc), val in sorted(
-                makam_agg.items(), key=lambda x: -x[1]
-            ):
-                labels.append(f"{ai.pc_vocab_inv[pc]}{ai.acc_vocab_inv[acc]}")
-                values.append(val)
-
-            ax.bar(labels, values)
-
-            ax.set_title(makam_list[i]["name"], fontname="Times", fontsize=10)
-            ax.tick_params(axis="x", rotation=90, labelsize=9)
-
-            if i % 2 == 0:
-                ax.set_ylabel("Normalized Attn.",
-                              fontname="Times", fontsize=10)
-
-        if num_makams % 2 != 0:
-            fig.delaxes(axes[-1])
-
-        plt.subplots_adjust(
-            left=0.1,
-            right=0.5,
-            top=0.1,
-            bottom=0.01,
-            hspace=0.01,   # ver. spacing
-            wspace=0.01    # hor. spacing
-        )
-        plt.tight_layout()
-        if save_fig:
-            plt.savefig(
-                "figs/attn_by_pitch_acc_all_makams.pdf",
-                bbox_inches="tight",
-                pad_inches=0.01
+            ax.annotate(
+                "\n".join(lines),
+                (center, y_top),
+                xytext=(center, y_text),
+                textcoords="data",
+                ha=h_align,
+                va="bottom",
+                fontsize=8.5,
+                arrowprops=dict(arrowstyle="-", lw=0.5, color="gray")
             )
 
-        plt.show()
+        ax.set_xlabel("Note index")
+        ax.set_ylabel("Normalised attention  $T\\alpha_t$")
+        ax.set_ylim(0, norm_attn.max() * 1.6)
+        ax.tick_params(labelsize=9)
+
+        fig.tight_layout()
+        self._finish(fig, "example_piece", save_fig)
+
+        print("Highest peaks "
+              "(index: pitch, octave, relative duration, measure position | T*alpha)")
+        for t in peaks:
+            description = self._describe_note(
+                t, notes[t], dur_values, spelling_map, use_symbols=False)
+            print(f"  {description} | {norm_attn[t]:.2f}")

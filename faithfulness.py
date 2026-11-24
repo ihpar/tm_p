@@ -1,227 +1,316 @@
-"""
-Faithfulness tests for the attention weights (Reviewer 1, Reviewer 2 item 10).
-
-For every test piece of a trained model we delete a fraction k of its notes and
-re-classify the shortened piece. Four deletion orders are compared:
-    attn_top     notes with the highest attention first
-    attn_bottom  notes with the lowest attention first
-    random       uniformly random notes (averaged over `--n_random` draws)
-    grad_top     notes with the highest gradient x input saliency first
-If attention identifies the notes the prediction depends on, deleting attn_top
-notes should hurt accuracy much more than deleting random or attn_bottom notes,
-and about as much as grad_top.  We also report the per-piece Spearman rank
-correlation between attention and saliency.
-
-python faithfulness.py --tag full --seeds 0 1 2 3 4
--> results/faithfulness/<tag>_seed<k>.json, results/faithfulness/<tag>_summary.csv,
-   figs_rev/faithfulness_<tag>.pdf
-"""
-
 import os
-import json
-import argparse
+import torch
 import numpy as np
 import pandas as pd
-import torch
 from scipy.stats import spearmanr
 
-from dataset import (load_pieces, read_split_files, MakamDataset, collate_fn, seed_everything)
-from bilstm import BiLSTMAttentionClassifier, DEFAULT_VOCAB_SIZES
+from constants import *
+from experiments import load_trained_model
+from utils import seed_everything, move_batch_to_device
+from disk_utils import save_json
+from dataset import (
+    load_pieces,
+    read_split_files,
+    MakamDataset,
+    collate_fn
+)
+
+# Deletion orders of the faithfulness test
+#   attn_top     notes with the highest attention first
+#   attn_bottom  notes with the lowest attention first
+#   grad_top     notes with the highest gradient x input saliency first
+#   random       random notes (averaged over several draws)
+DELETION_ORDERS = ["attn_top", "attn_bottom", "grad_top", "random"]
 
 
-def load_model(ckpt_path, device):
-    ckpt = torch.load(ckpt_path, map_location=device)
-    a = ckpt["args"]
-    features = tuple(f for f in a["features"].split(",") if f)
-    model = BiLSTMAttentionClassifier(
-        **{f"{k}_vocab": v for k, v in DEFAULT_VOCAB_SIZES.items()},
-        emb_dim=a["emb_dim"], lstm_hidden=a["hidden"], num_layers=a["num_layers"],
-        dropout=a["dropout"], pooling=a["pooling"], features=features,
-        packed=not a.get("no_pack", False)).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
-    return model, a
-
-
-def to_device(batch, device):
-    return {k: v.to(device) for k, v in batch.items() if k != "f_names"}
-
-
+@torch.no_grad()
 def predict_pieces(model, pieces, labels, device, batch_size=32):
-    """Returns predictions for a list of pieces (no perturbation)."""
+    """
+    returns {f_name: predicted label} for a list of pieces
+    """
     ds = MakamDataset(pieces, labels)
-    preds = {}
-    for i in range(0, len(ds), batch_size):
-        items = [ds[j] for j in range(i, min(i + batch_size, len(ds)))]
+    preds_by_f_name = {}
+
+    for batch_start in range(0, len(ds), batch_size):
+        batch_end = min(batch_start + batch_size, len(ds))
+        items = [ds[i] for i in range(batch_start, batch_end)]
         batch = collate_fn(items)
-        with torch.no_grad():
-            logits, _ = model(to_device(batch, device))
-        for name, p in zip(batch["f_names"].tolist(), logits.argmax(1).cpu().tolist()):
-            preds[name] = p
-    return preds
+
+        logits, _ = model(move_batch_to_device(batch, device))
+        preds = torch.argmax(logits, dim=1).cpu().tolist()
+
+        for f_name, pred in zip(batch["f_names"].tolist(), preds):
+            preds_by_f_name[f_name] = pred
+
+    return preds_by_f_name
 
 
-def attention_and_saliency(model, pieces, labels, device):
-    """Per piece: attention weights and gradient x input saliency (both length T)."""
+def compute_attention_and_saliency(model, pieces, labels, device):
+    """
+    For every piece: the predicted label, the attention weight of every
+    note and the saliency of every note.
+
+    The saliency of a note is |gradient x input|: the gradient of the
+    predicted class score w.r.t. the embedded note, multiplied by the
+    embedded note and summed over the embedding dimensions.
+
+    returns {f_name: {"pred": int, "attn": array (T,), "sal": array (T,)}}
+    """
     ds = MakamDataset(pieces, labels)
-    out = {}
+    info = {}
+
     model.keep_input_grad = True
-    # cuDNN only supports RNN backward in training mode; the LSTM has no dropout
-    # (single layer), so switching only this module changes nothing numerically.
+    # cuDNN can only run the backward pass of an LSTM in training mode.
+    # The LSTM has a single layer and therefore no dropout, so switching
+    # only this module to training mode changes nothing numerically.
     model.bilstm.train()
-    for j in range(len(ds)):
-        batch = collate_fn([ds[j]])
-        b = to_device(batch, device)
+
+    for i in range(len(ds)):
+        batch = collate_fn([ds[i]])
+        f_name = batch["f_names"][0]
+
         model.zero_grad()
-        logits, attn = model(b)
-        pred = logits.argmax(1)
+        logits, attn_weights = model(move_batch_to_device(batch, device))
+        pred = torch.argmax(logits, dim=1)
+
+        # gradient of the predicted class score w.r.t. the embedded input
         logits[0, pred].sum().backward()
         x = model.last_input
-        sal = (x.grad * x).sum(-1).abs()[0].detach().cpu().numpy()
-        out[batch["f_names"][0]] = {
+        saliency = (x.grad * x).sum(-1).abs()[0]
+
+        info[f_name] = {
             "pred": int(pred.item()),
-            "attn": attn[0].detach().cpu().numpy(),
-            "sal": sal,
+            "attn": attn_weights[0].detach().cpu().numpy(),
+            "sal": saliency.detach().cpu().numpy()
         }
+
     model.keep_input_grad = False
     model.bilstm.eval()
     model.zero_grad()
-    return out
+
+    return info
 
 
-def delete_notes(piece, order, k_frac, rng=None):
-    """Return a copy of the piece with the first k_frac*T notes of `order` removed."""
+def delete_notes(piece, order, fraction, rng=None):
+    """
+    Returns a copy of the piece without `fraction` of its notes.
+
+    order: note indices, the notes to delete first come first.
+           None deletes random notes, drawn with rng.
+
+    At least one note is kept.
+    """
     T = len(piece["notes"])
-    n_del = int(round(k_frac * T))
-    n_del = min(n_del, T - 1)                     # keep at least one note
-    if order is None:                              # random
-        drop = set(rng.choice(T, size=n_del, replace=False).tolist())
+    num_delete = int(round(fraction * T))
+    num_delete = min(num_delete, T - 1)
+
+    if order is None:
+        deleted = rng.choice(T, size=num_delete, replace=False).tolist()
     else:
-        drop = set(order[:n_del].tolist())
-    return {"f_name": piece["f_name"], "notes": [n for i, n in enumerate(piece["notes"]) if i not in drop]}
+        deleted = order[:num_delete].tolist()
+    deleted = set(deleted)
+
+    kept_notes = []
+    for t, note in enumerate(piece["notes"]):
+        if t not in deleted:
+            kept_notes.append(note)
+
+    return {"f_name": piece["f_name"], "notes": kept_notes}
 
 
-def draw_figure(df, summ, args):
-    import figstyle  # noqa: F401  (shared fonts/sizes)
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(5.5, 3.8))
-    base = df["base_accuracy"].mean()
-    labels_map = {"attn_top": "highest attention first", "grad_top": "highest saliency first",
-                  "random": "random", "attn_bottom": "lowest attention first"}
-    styles = {"attn_top": ("o", "-"), "grad_top": ("s", "-"), "random": ("^", "--"), "attn_bottom": ("v", ":")}
-    for name in ("attn_top", "grad_top", "random", "attn_bottom"):
-        s = summ[summ["order"] == name].sort_values("frac")
-        x = [0] + (s["frac"] * 100).tolist()
-        yv = [base] + s["acc_mean"].tolist()
-        err = [0] + s["acc_sd"].fillna(0).tolist()
-        ax.errorbar(x, np.array(yv) * 100, yerr=np.array(err) * 100, marker=styles[name][0], ls=styles[name][1],
-                    capsize=3, label=labels_map[name])
-    ax.set_xlabel("Notes deleted per piece (%)")
-    ax.set_ylabel("Test accuracy (%)")
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.pdf"))
-    fig.savefig(os.path.join(args.fig_dir, f"faithfulness_{args.tag}.png"), dpi=200)
+def run_deletion_test(
+    model,
+    pieces,
+    labels,
+    deletion_orders,
+    order_name,
+    fraction,
+    num_draws,
+    rng,
+    base_preds,
+    device
+):
+    """
+    Deletes `fraction` of the notes of every piece in the given order and
+    classifies the shortened pieces.
+
+    returns accuracy, flip_rate (averaged over num_draws)
+    flip_rate: share of pieces whose prediction changed
+    """
+    y = np.array(labels)
+    accuracies = []
+    flip_rates = []
+
+    for _ in range(num_draws):
+        shortened_pieces = []
+        for piece in pieces:
+            if order_name == "random":
+                order = None
+            else:
+                order = deletion_orders[order_name][piece["f_name"]]
+            shortened_pieces.append(delete_notes(piece, order, fraction, rng))
+
+        preds_by_f_name = predict_pieces(
+            model, shortened_pieces, labels, device)
+        preds = np.array([preds_by_f_name[p["f_name"]] for p in pieces])
+
+        accuracies.append((preds == y).mean())
+        flip_rates.append((preds != base_preds).mean())
+
+    return float(np.mean(accuracies)), float(np.mean(flip_rates))
 
 
+def run_deletion_tests(
+    tag,
+    device,
+    seeds=SEEDS,
+    fractions=DELETION_FRACTIONS,
+    num_random_draws=NUM_RANDOM_DRAWS,
+    results_dir=RESULTS_DIR,
+    split_dir=SPLIT_DIR
+):
+    """
+    Faithfulness test of the attention weights of the trained models
+    <results_dir>/<tag>/seed<seed>.pt
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--tag", default="full")
-    ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
-    ap.add_argument("--fracs", type=float, nargs="+", default=[0.05, 0.10, 0.20, 0.40])
-    ap.add_argument("--n_random", type=int, default=5)
-    ap.add_argument("--results_dir", default="results")
-    ap.add_argument("--split_dir", default="splits")
-    ap.add_argument("--fig_dir", default="figs_rev")
-    ap.add_argument("--device", default="auto")
-    ap.add_argument("--figure_only", action="store_true", help="redraw the figure from <tag>_summary.csv")
-    args = ap.parse_args()
-    if args.figure_only:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        out_dir = os.path.join(args.results_dir, "faithfulness")
-        df = pd.read_csv(os.path.join(out_dir, f"{args.tag}_curves.csv"))
-        summ = pd.read_csv(os.path.join(out_dir, f"{args.tag}_summary.csv"))
-        os.makedirs(args.fig_dir, exist_ok=True)
-        draw_figure(df, summ, args)
-        return
+    If attention points at the notes a prediction depends on, deleting the
+    most attended notes should hurt the accuracy much more than deleting
+    random or least attended notes.
 
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else
-                              "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
-                              else "cpu")
-    else:
-        device = torch.device(args.device)
+    Writes to <results_dir>/faithfulness/
+        <tag>_seed<seed>.json   results of one seed
+        <tag>_curves.csv        accuracy per seed, order and fraction
+        <tag>_summary.csv       mean and SD over the seeds
 
+    returns curves, summary (DataFrames)
+    """
     pieces_all, labels_all, _ = load_pieces()
-    out_dir = os.path.join(args.results_dir, "faithfulness")
+    out_dir = os.path.join(results_dir, "faithfulness")
     os.makedirs(out_dir, exist_ok=True)
-    os.makedirs(args.fig_dir, exist_ok=True)
+
     rows = []
 
-    for seed in args.seeds:
+    for seed in seeds:
         seed_everything(seed)
-        ckpt = os.path.join(args.results_dir, args.tag, f"seed{seed}.pt")
-        model, margs = load_model(ckpt, device)
-        tr, va, te = read_split_files(pieces_all, seed, args.split_dir)
-        pieces = [pieces_all[i] for i in te]
-        labels = [labels_all[i] for i in te]
+
+        model, _ = load_trained_model(tag, seed, device, results_dir)
+
+        _, _, test_idx = read_split_files(pieces_all, seed, split_dir)
+        pieces = [pieces_all[i] for i in test_idx]
+        labels = [labels_all[i] for i in test_idx]
         y = np.array(labels)
 
-        info = attention_and_saliency(model, pieces, labels, device)
-        base_pred = np.array([info[p["f_name"]]["pred"] for p in pieces])
-        base_acc = (base_pred == y).mean()
-        rhos = [spearmanr(info[p["f_name"]]["attn"], info[p["f_name"]]["sal"]).correlation
-                for p in pieces if len(p["notes"]) > 2]
-        rho_mean = float(np.nanmean(rhos))
-        print(f"[{args.tag} s{seed}] base acc {base_acc:.4f} | Spearman(attn, grad x input) "
-              f"mean {rho_mean:.3f} (median {np.nanmedian(rhos):.3f})")
+        info = compute_attention_and_saliency(model, pieces, labels, device)
+
+        base_preds = np.array([info[p["f_name"]]["pred"] for p in pieces])
+        base_accuracy = (base_preds == y).mean()
+
+        # rank correlation between attention and saliency, per piece
+        correlations = []
+        for piece in pieces:
+            if len(piece["notes"]) > 2:
+                piece_info = info[piece["f_name"]]
+                correlation = spearmanr(
+                    piece_info["attn"], piece_info["sal"]).correlation
+                correlations.append(correlation)
+
+        correlation_mean = float(np.nanmean(correlations))
+        correlation_median = float(np.nanmedian(correlations))
+
+        print(
+            f"[{tag} s{seed}] "
+            f"Base Acc: {base_accuracy:.4f} | "
+            f"Spearman(attention, saliency): mean {correlation_mean:.3f}, "
+            f"median {correlation_median:.3f}"
+        )
+
+        # note indices of every piece, the notes to delete first come first
+        deletion_orders = {
+            "attn_top": {},
+            "attn_bottom": {},
+            "grad_top": {}
+        }
+        for piece in pieces:
+            f_name = piece["f_name"]
+            deletion_orders["attn_top"][f_name] = np.argsort(-info[f_name]["attn"])
+            deletion_orders["attn_bottom"][f_name] = np.argsort(info[f_name]["attn"])
+            deletion_orders["grad_top"][f_name] = np.argsort(-info[f_name]["sal"])
 
         rng = np.random.RandomState(seed)
-        orders = {
-            "attn_top": {p["f_name"]: np.argsort(-info[p["f_name"]]["attn"]) for p in pieces},
-            "attn_bottom": {p["f_name"]: np.argsort(info[p["f_name"]]["attn"]) for p in pieces},
-            "grad_top": {p["f_name"]: np.argsort(-info[p["f_name"]]["sal"]) for p in pieces},
-            "random": None,
+
+        result = {
+            "tag": tag,
+            "seed": seed,
+            "base_accuracy": base_accuracy,
+            "spearman_attn_saliency_mean": correlation_mean,
+            "spearman_attn_saliency_median": correlation_median,
+            "spearman_per_piece": [float(c) for c in correlations],
+            "curves": {}
         }
-        result = {"tag": args.tag, "seed": seed, "base_accuracy": base_acc,
-                  "spearman_attn_saliency_mean": rho_mean,
-                  "spearman_attn_saliency_median": float(np.nanmedian(rhos)),
-                  "spearman_per_piece": [float(r) for r in rhos], "curves": {}}
-        for frac in args.fracs:
-            for name, order in orders.items():
-                reps = args.n_random if name == "random" else 1
-                accs, flips = [], []
-                for _ in range(reps):
-                    pert = [delete_notes(p, None if order is None else order[p["f_name"]], frac, rng)
-                            for p in pieces]
-                    preds = predict_pieces(model, pert, labels, device)
-                    pv = np.array([preds[p["f_name"]] for p in pieces])
-                    accs.append((pv == y).mean())
-                    flips.append((pv != base_pred).mean())
-                acc, flip = float(np.mean(accs)), float(np.mean(flips))
-                result["curves"][f"{name}@{frac}"] = {"accuracy": acc, "flip_rate": flip}
-                rows.append({"tag": args.tag, "seed": seed, "order": name, "frac": frac,
-                             "accuracy": acc, "flip_rate": flip, "base_accuracy": base_acc})
-                print(f"    delete {int(frac * 100):2d}% {name:12s} acc {acc:.4f} flip {flip:.3f}")
-        with open(os.path.join(out_dir, f"{args.tag}_seed{seed}.json"), "w") as f:
-            json.dump(result, f)
 
-    df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(out_dir, f"{args.tag}_curves.csv"), index=False)
-    summ = df.groupby(["order", "frac"]).agg(acc_mean=("accuracy", "mean"), acc_sd=("accuracy", "std"),
-                                              flip_mean=("flip_rate", "mean"), flip_sd=("flip_rate", "std"),
-                                              n=("seed", "count")).reset_index()
-    summ.to_csv(os.path.join(out_dir, f"{args.tag}_summary.csv"), index=False)
-    pd.set_option("display.width", 200)
-    print("\n", summ.to_string(index=False))
+        for fraction in fractions:
+            for order_name in DELETION_ORDERS:
+                if order_name == "random":
+                    num_draws = num_random_draws
+                else:
+                    num_draws = 1
 
-    draw_figure(df, summ, args)
-    print("figure saved to", args.fig_dir)
+                accuracy, flip_rate = run_deletion_test(
+                    model,
+                    pieces,
+                    labels,
+                    deletion_orders,
+                    order_name,
+                    fraction,
+                    num_draws,
+                    rng,
+                    base_preds,
+                    device
+                )
+
+                result["curves"][f"{order_name}@{fraction}"] = {
+                    "accuracy": accuracy,
+                    "flip_rate": flip_rate
+                }
+                rows.append({
+                    "tag": tag,
+                    "seed": seed,
+                    "order": order_name,
+                    "frac": fraction,
+                    "accuracy": accuracy,
+                    "flip_rate": flip_rate,
+                    "base_accuracy": base_accuracy
+                })
+
+                print(
+                    f"    delete {int(fraction * 100):2d}% {order_name:12s} "
+                    f"Acc: {accuracy:.4f} | Flip rate: {flip_rate:.3f}"
+                )
+
+        save_json(result, os.path.join(out_dir, f"{tag}_seed{seed}.json"))
+
+    curves = pd.DataFrame(rows)
+    curves.to_csv(os.path.join(out_dir, f"{tag}_curves.csv"), index=False)
+
+    summary = curves.groupby(["order", "frac"]).agg(
+        acc_mean=("accuracy", "mean"),
+        acc_sd=("accuracy", "std"),
+        flip_mean=("flip_rate", "mean"),
+        flip_sd=("flip_rate", "std"),
+        n=("seed", "count")
+    ).reset_index()
+    summary.to_csv(os.path.join(out_dir, f"{tag}_summary.csv"), index=False)
+
+    return curves, summary
 
 
-if __name__ == "__main__":
-    main()
+def load_deletion_tests(tag, results_dir=RESULTS_DIR):
+    """
+    Loads the tables written by run_deletion_tests.
+    returns curves, summary (DataFrames)
+    """
+    out_dir = os.path.join(results_dir, "faithfulness")
+    curves = pd.read_csv(os.path.join(out_dir, f"{tag}_curves.csv"))
+    summary = pd.read_csv(os.path.join(out_dir, f"{tag}_summary.csv"))
+
+    return curves, summary
