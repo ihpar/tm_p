@@ -4,27 +4,34 @@ Code, data and results of the paper. A BiLSTM with attention is trained to recog
 the 12 most frequent makams of SymbTr v2.4.3 from note sequences, and controlled
 experiments show what the model uses and whether its attention weights can be trusted.
 
-Tag `jnmr-r1` marks the state of the first revision. Tag `jnmr-r1-prelim` marks the
-earlier, non-deterministic run that the paper refers to for the duration analysis.
+Tag `jnmr-r1` marks the state of the first revision. Two earlier trainings of the same
+pipeline, which the paper refers to for the duration analysis, are kept in the history of
+the repository: tag `jnmr-r1-prelim` (non-deterministic run) and commit `0dbc397`.
 
 ## How to run
 
 ```bash
 git clone https://github.com/ihpar/tm_p && cd tm_p
+pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu129
 pip install -r requirements.txt
 ```
+
+PyTorch is installed first because its build has to match the GPU driver of the machine
+(the line above is an example, see https://pytorch.org/get-started). `requirements.txt`
+lists the other five libraries. The figures use the font Liberation Sans if it is installed
+(`apt-get update && apt-get install -y fonts-liberation`), otherwise DejaVu Sans.
 
 Run the notebooks in this order, every notebook from top to bottom:
 
 | notebook | what it does | needs |
 |---|---|---|
-| `1_train.ipynb` | hyperparameter search, the proposed model on the five splits, pooling variants | GPU |
+| `1_train.ipynb` | hyperparameter search, the proposed model on the five splits, pooling variants, the best configuration of the search on the five splits | GPU |
 | `2_ablations_and_controls.ipynb` | feature ablations, transposed and shuffled test pieces, interval representation | GPU, notebook 1 |
 | `3_baselines.ipynb` | pitch-histogram and pitch-bigram classifiers | CPU |
 | `4_attention_analysis.ipynb` | deletion tests, attention statistics | GPU, notebooks 1 and 2 |
-| `5_tables_and_figures.ipynb` | summary tables, all figures, comparison with the archived results | notebooks 1 to 4 |
+| `5_tables_and_figures.ipynb` | summary tables, all figures | notebooks 1 to 4 |
 
-All of it is about 95 trainings of roughly two minutes each plus the analyses: a few hours
+All of it is about 100 trainings of roughly two minutes each plus the analyses: a few hours
 on one consumer GPU.
 
 * A run whose result file already exists is skipped, so a notebook can be stopped and
@@ -61,10 +68,10 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `result_tables.py` | mean ± CI tables, paired t-tests against the proposed model, pooled per-makam report and confusions |
 | `plot_manager.py` | `PlotManager`: every figure of the paper |
 | `pitch_names.py` | pitch names as stored by the model and as written in SymbTr |
-| `compare_with_archive.py` | compares a new run with the archived results |
 | `disk_utils.py`, `utils.py` | result files and checkpoints; seeding, device, classification metrics |
 | `file_parser.py`, `txt_parser.ipynb` | SymbTr `.txt` parser that produced `dataset.pkl` and `vocab.pkl` from `data/txt/` (SymbTr v2.4.3) |
-| `requirements.txt` | `pip freeze` of the environment in which the archived results were produced |
+| `requirements.txt` | the libraries the code uses, with the versions that produced `results/` |
+| `environment_freeze.txt` | `pip freeze` of the machine that produced `results/` (NVIDIA GeForce RTX 4090) |
 
 `wv_utils.py` and `dataset_checks.ipynb` are files of the preliminary version and are not used.
 
@@ -80,7 +87,6 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `results/attention/` | note table (one row per note of every test piece), pitch enrichment, report with all attention statistics |
 | `results/summary.txt`, `full_pooled.txt`, `paired_tests.txt` | the tables of the paper as text |
 | `figs/` | figures |
-| `results_archive/`, `figs_archive/` | results and figures of the previous run, for the comparison in notebook 5 |
 
 Tags of the models:
 
@@ -94,16 +100,19 @@ Tags of the models:
 | `transpose_aug` | trained with random transposition of the training pieces |
 | `train_shuffle` | trained on pieces with shuffled note order |
 | `hp_00` ... `hp_19` | trials of the hyperparameter search |
+| `search_best` | the configuration with the lowest validation loss in the search (`hp_16`: 64 hidden units), trained on the five splits |
 | `hist53_dur__*`, `hist53_cnt__*`, `hist_abs_dur__*`, `bigram__*` | baselines: feature set and classifier |
 
 ## Reproducibility
 
-Every training is seeded and uses deterministic kernels. On the same GPU type and the
-library versions of `requirements.txt` a run reproduces the archived models exactly
-(`hp_00` and `full/seed0` are two independent trainings of the same configuration and are
-identical). On other hardware the accuracies can differ slightly. The last section of
-`5_tables_and_figures.ipynb` compares a new run with `results_archive/` and lists every
-run whose predictions differ.
+Every training is seeded and uses deterministic kernels: on one machine, two trainings of
+the same configuration give the same model (`hp_00` and `full/seed0` are two independent
+trainings of the same configuration and are identical). Across machines this does not
+hold. With another GPU type, CUDA version or PyTorch build the trained models differ, and
+the accuracies of single splits move by a few points in either direction. The files in
+`results/` were produced on an NVIDIA GeForce RTX 4090 with the packages of
+`environment_freeze.txt`. A new run on another machine should therefore be compared with
+the paper through the means and confidence intervals over the five splits, not run by run.
 
 The attention statistics and the figures can be computed again without a GPU from the note
 tables `results/attention/*_notes.csv.gz` (`AttentionInspector.load_note_table`).

@@ -9,11 +9,6 @@ SPLIT_DIR = "splits/"
 RESULTS_DIR = "results/"
 FIGS_DIR = "figs/"
 
-# results and figures of the previous run, kept for the comparison in
-# 5_tables_and_figures.ipynb
-ARCHIVE_RESULTS_DIR = "results_archive/"
-ARCHIVE_FIGS_DIR = "figs_archive/"
-
 # a tiny dry run of every step writes here (QUICK_TEST = True in the notebooks)
 QUICK_TEST_RESULTS_DIR = "results_quick_test/"
 QUICK_TEST_FIGS_DIR = "figs_quick_test/"

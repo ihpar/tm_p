@@ -77,23 +77,7 @@ def get_model_config(checkpoint):
     """
     Returns the settings needed to rebuild the model of a checkpoint.
     """
-    if "model_config" in checkpoint:
-        return checkpoint["model_config"]
-
-    # Checkpoints of the previous run (results_archive/) stored the
-    # command line arguments of the training script instead.
-    old_args = checkpoint["args"]
-    features = [f for f in old_args["features"].split(",") if f]
-
-    return {
-        "emb_dim": old_args["emb_dim"],
-        "lstm_hidden": old_args["hidden"],
-        "num_layers": old_args["num_layers"],
-        "dropout": old_args["dropout"],
-        "pooling": old_args["pooling"],
-        "features": features,
-        "packed": not old_args.get("no_pack", False)
-    }
+    return checkpoint["model_config"]
 
 
 # ---------------------------------------------------------------------------
