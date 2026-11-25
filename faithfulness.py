@@ -304,6 +304,164 @@ def run_deletion_tests(
     return curves, summary
 
 
+def pitch_matched_order(piece, attention_order, fraction, rng):
+    """
+    Control for the deletion of the most attended notes.
+
+    The most attended notes of a piece are mostly notes of a few pitches,
+    so deleting them also removes these pitches from the piece. This
+    control deletes the same number of notes of the same pitches, but at
+    random positions: for every pitch, as many notes are deleted as the
+    attention order would delete, drawn at random from all notes of that
+    pitch in the piece.
+
+    A pitch is the note letter, the accidental and the octave of a note.
+
+    returns the note indices to delete (array)
+    """
+    T = len(piece["notes"])
+    num_delete = int(round(fraction * T))
+    num_delete = min(num_delete, T - 1)
+
+    # how many notes of every pitch the attention order deletes
+    num_by_pitch = {}
+    for t in attention_order[:num_delete].tolist():
+        pitch = piece["notes"][t][:3]
+        num_by_pitch[pitch] = num_by_pitch.get(pitch, 0) + 1
+
+    # positions of all notes of every pitch
+    positions_by_pitch = {}
+    for t, note in enumerate(piece["notes"]):
+        positions_by_pitch.setdefault(note[:3], []).append(t)
+
+    deleted = []
+    for pitch in sorted(num_by_pitch):
+        chosen = rng.choice(
+            positions_by_pitch[pitch],
+            size=num_by_pitch[pitch],
+            replace=False
+        )
+        deleted.extend(chosen.tolist())
+
+    return np.array(deleted, dtype=int)
+
+
+def run_pitch_matched_deletion_tests(
+    tag,
+    device,
+    seeds=SEEDS,
+    fractions=DELETION_FRACTIONS,
+    num_random_draws=NUM_RANDOM_DRAWS,
+    results_dir=RESULTS_DIR,
+    split_dir=SPLIT_DIR
+):
+    """
+    Deletion of the most attended notes (attn_top) against the deletion of
+    the same number of notes of the same pitches at random positions
+    (pitch_matched, averaged over num_random_draws draws).
+
+    If the two hurt the accuracy equally, the attention weights point at
+    pitches. If attn_top hurts more, they also point at the particular
+    notes of these pitches that the prediction depends on.
+
+    Writes to <results_dir>/faithfulness/
+        <tag>_pitch_matched_curves.csv    accuracy per seed, order, fraction
+        <tag>_pitch_matched_summary.csv   mean and SD over the seeds
+
+    returns curves, summary (DataFrames)
+    """
+    pieces_all, labels_all, _ = load_pieces()
+    out_dir = os.path.join(results_dir, "faithfulness")
+    os.makedirs(out_dir, exist_ok=True)
+
+    rows = []
+
+    for seed in seeds:
+        seed_everything(seed)
+
+        model, _ = load_trained_model(tag, seed, device, results_dir)
+
+        _, _, test_idx = read_split_files(pieces_all, seed, split_dir)
+        pieces = [pieces_all[i] for i in test_idx]
+        labels = [labels_all[i] for i in test_idx]
+        y = np.array(labels)
+
+        info = compute_attention_and_saliency(model, pieces, labels, device)
+
+        base_preds = np.array([info[p["f_name"]]["pred"] for p in pieces])
+        base_accuracy = (base_preds == y).mean()
+        print(f"[{tag} s{seed}] Base Acc: {base_accuracy:.4f}")
+
+        attention_orders = {}
+        for piece in pieces:
+            f_name = piece["f_name"]
+            attention_orders[f_name] = np.argsort(-info[f_name]["attn"])
+
+        rng = np.random.RandomState(seed)
+
+        for fraction in fractions:
+            for order_name in ["attn_top", "pitch_matched"]:
+                if order_name == "pitch_matched":
+                    num_draws = num_random_draws
+                else:
+                    num_draws = 1
+
+                accuracies = []
+                flip_rates = []
+
+                for _ in range(num_draws):
+                    shortened_pieces = []
+                    for piece in pieces:
+                        order = attention_orders[piece["f_name"]]
+                        if order_name == "pitch_matched":
+                            order = pitch_matched_order(
+                                piece, order, fraction, rng)
+                        shortened_pieces.append(
+                            delete_notes(piece, order, fraction))
+
+                    preds_by_f_name = predict_pieces(
+                        model, shortened_pieces, labels, device)
+                    preds = np.array(
+                        [preds_by_f_name[p["f_name"]] for p in pieces])
+
+                    accuracies.append((preds == y).mean())
+                    flip_rates.append((preds != base_preds).mean())
+
+                accuracy = float(np.mean(accuracies))
+                flip_rate = float(np.mean(flip_rates))
+
+                rows.append({
+                    "tag": tag,
+                    "seed": seed,
+                    "order": order_name,
+                    "frac": fraction,
+                    "accuracy": accuracy,
+                    "flip_rate": flip_rate,
+                    "base_accuracy": base_accuracy
+                })
+
+                print(
+                    f"    delete {int(fraction * 100):2d}% {order_name:13s} "
+                    f"Acc: {accuracy:.4f} | Flip rate: {flip_rate:.3f}"
+                )
+
+    curves = pd.DataFrame(rows)
+    curves.to_csv(
+        os.path.join(out_dir, f"{tag}_pitch_matched_curves.csv"), index=False)
+
+    summary = curves.groupby(["order", "frac"]).agg(
+        acc_mean=("accuracy", "mean"),
+        acc_sd=("accuracy", "std"),
+        flip_mean=("flip_rate", "mean"),
+        flip_sd=("flip_rate", "std"),
+        n=("seed", "count")
+    ).reset_index()
+    summary.to_csv(
+        os.path.join(out_dir, f"{tag}_pitch_matched_summary.csv"), index=False)
+
+    return curves, summary
+
+
 def load_deletion_tests(tag, results_dir=RESULTS_DIR):
     """
     Loads the tables written by run_deletion_tests.
