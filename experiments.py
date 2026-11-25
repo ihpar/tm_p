@@ -80,6 +80,7 @@ def run_experiment(
     learning_rate=LEARNING_RATE,
     num_epochs=NUM_EPOCHS,
     patience=PATIENCE,
+    scheduler_patience=SCHEDULER_PATIENCE,
     max_train_batches=None,
     results_dir=RESULTS_DIR,
     split_dir=SPLIT_DIR,
@@ -101,6 +102,13 @@ def run_experiment(
     Variants of the training data:
     train_shuffle:       shuffle the note order of every training piece
     train_transpose_aug: random transposition in [-k, +k] kommas
+
+    Training budget:
+    num_epochs:          maximum number of epochs
+    patience:            early stopping after this many epochs without a
+                         lower validation loss
+    scheduler_patience:  the learning rate is halved after this many epochs
+                         without a lower validation loss
 
     max_train_batches:   batches per epoch, for quick tests (None = all)
     skip_if_done:        do nothing if the result file already exists
@@ -142,7 +150,7 @@ def run_experiment(
         optimizer,
         mode="min",
         factor=SCHEDULER_FACTOR,
-        patience=SCHEDULER_PATIENCE
+        patience=scheduler_patience
     )
 
     start_time = time.time()
@@ -185,6 +193,7 @@ def run_experiment(
             "learning_rate": learning_rate,
             "num_epochs": num_epochs,
             "patience": patience,
+            "scheduler_patience": scheduler_patience,
             "max_train_batches": max_train_batches
         },
         "features": list(features),
