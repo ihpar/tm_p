@@ -32,10 +32,12 @@ def get_sharp_name(pc_id, acc_id):
 
 def get_symbtr_name(pc_id, acc_id, spelling_map):
     """
-    Pitch name of a note as it is most often written in the SymbTr files.
+    Pitch name of a note as it is most often written in the SymbTr files
+    of one makam.
     "A#5" -> "Bb4"
 
-    spelling_map: built by build_symbtr_spelling_map().
+    spelling_map: the spellings of one makam, {"A#5": "Bb4", ...}
+                  (one entry of build_symbtr_spelling_map()).
                   If None, the sharp name is returned.
     """
     sharp_name = get_sharp_name(pc_id, acc_id)
@@ -48,22 +50,36 @@ def get_symbtr_name(pc_id, acc_id, spelling_map):
 
 def build_symbtr_spelling_map(data_dir=SYMBTR_TXT_DIR):
     """
-    For every sharp name, finds the spelling that is most frequent in the
-    SymbTr txt files (octave removed).
+    For every makam and every sharp name, finds the spelling that is most
+    frequent in the SymbTr txt files of that makam (octave removed).
 
-    returns {"A#5": "Bb4", "C#4": "C#4", ...}
+    The same pitch can be written differently in different makams: the
+    pitch 4 kommas above G is "G#4" in the Hicaz scores and "Ab5" in the
+    Kurdili Hicazkar scores.
+
+    The makam of a file is the first part of its name:
+    "hicaz--sarki--aksak--..." -> "hicaz"
+
+    returns {"hicaz": {"A#5": "Bb4", "G#4": "G#4", ...},
+             "kurdilihicazkar": {"G#4": "Ab5", ...}, ...}
     """
     if not os.path.isdir(data_dir):
         print(f"{data_dir} not found, using the sharp names")
-        return None
+        return {makam: None for makam in MAKAM_NAMES}
 
     file_parser = FileParser()
 
-    # sharp name -> Counter of the original spellings
-    spelling_counts = defaultdict(Counter)
+    # makam -> sharp name -> Counter of the original spellings
+    spelling_counts = {}
+    for makam in MAKAM_NAMES:
+        spelling_counts[makam] = defaultdict(Counter)
 
     for f_name in os.listdir(data_dir):
         if not f_name.endswith(".txt"):
+            continue
+
+        makam = f_name.split("--")[0]
+        if makam not in spelling_counts:
             continue
 
         f_path = os.path.join(data_dir, f_name)
@@ -89,11 +105,13 @@ def build_symbtr_spelling_map(data_dir=SYMBTR_TXT_DIR):
 
                 # original spelling without the octave: "B4b1" -> "Bb1"
                 original_spelling = note[0] + note[2:]
-                spelling_counts[sharp_name][original_spelling] += 1
+                spelling_counts[makam][sharp_name][original_spelling] += 1
 
     spelling_map = {}
-    for sharp_name, counts in spelling_counts.items():
-        spelling_map[sharp_name] = counts.most_common(1)[0][0]
+    for makam in MAKAM_NAMES:
+        spelling_map[makam] = {}
+        for sharp_name, counts in spelling_counts[makam].items():
+            spelling_map[makam][sharp_name] = counts.most_common(1)[0][0]
 
     return spelling_map
 

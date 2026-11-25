@@ -43,12 +43,13 @@ Run the notebooks in this order, every notebook from top to bottom:
 | `4_attention_analysis.ipynb` | deletion tests, attention statistics | GPU, notebooks 1 and 2 |
 | `5_tables_and_figures.ipynb` | summary tables, all figures | notebooks 1 to 4 |
 
-All of it is about 100 trainings of roughly two minutes each plus the analyses: a few hours
+All of it is about 105 trainings of roughly two minutes each plus the analyses: a few hours
 on one consumer GPU.
 
-* A run whose result file already exists is skipped, so a notebook can be stopped and
-  started again. To repeat a run, delete its result file.
-* `QUICK_TEST = True` in the second cell of a notebook makes a tiny dry run of every step
+* A training or evaluation whose result file already exists is skipped, so notebooks 1-3
+  can be stopped and started again. To repeat a run, delete its result file. The deletion
+  tests and the note tables of notebook 4 are always computed again and overwrite their files.
+* `QUICK_TEST = True` in the second code cell of a notebook makes a tiny dry run of every step
   (1 epoch, 3 batches) and writes to `results_quick_test/` and `figs_quick_test/`. Use it to
   check the setup before the long run.
 * A notebook can also run without the browser staying open (the outputs are saved into the
@@ -74,7 +75,7 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `experiments.py` | `run_experiment` (train one model on one split and test it), `evaluate_trained_model` (test a trained model on perturbed test pieces) |
 | `hparam_search.py` | `run_hyperparameter_search`: random search over 20 configurations on split 0 |
 | `baselines.py` | `run_baselines`: histogram and bigram features with logistic regression, SVM, random forest, k-NN |
-| `faithfulness.py` | `run_deletion_tests`: deletion tests and attention-saliency rank correlation |
+| `faithfulness.py` | `run_deletion_tests`: deletion tests and attention-saliency rank correlation; `run_pitch_matched_deletion_tests`: the control that deletes the same pitches at random positions |
 | `attention_inspector.py` | `AttentionInspector`: note table, pitch enrichment, duration, measure-position and rest statistics |
 | `stat_utils.py` | confidence interval, Holm correction, Cliff's delta, Friedman test with Kendall's W |
 | `result_tables.py` | mean ± CI tables, paired t-tests against the proposed model, pooled per-makam report and confusions |
@@ -85,8 +86,6 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `requirements.txt` | the libraries the code uses, with the versions that produced `results/` |
 | `environment_freeze.txt` | `pip freeze` of the machine that produced `results/` (NVIDIA GeForce RTX 4090) |
 
-`wv_utils.py` and `dataset_checks.ipynb` are files of the preliminary version and are not used.
-
 ## Results
 
 | location | content |
@@ -95,7 +94,7 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `results/<tag>/seed<k>__<perturbation>.json` | the same model on perturbed test pieces (`shuffle`, `transpose+9`, ...) |
 | `results/<tag>/seed<k>.pt` | trained model (kept for `full` and `no_meas`, which the attention analysis needs) |
 | `results/hparam_search.csv` | the 20 configurations of the hyperparameter search |
-| `results/faithfulness/` | deletion tests |
+| `results/faithfulness/` | deletion tests (`full_*`) and the pitch-matched control (`full_pitch_matched_*`) |
 | `results/attention/` | note table (one row per note of every test piece), pitch enrichment, report with all attention statistics |
 | `results/summary.txt`, `full_pooled.txt`, `paired_tests.txt` | the tables of the paper as text |
 | `figs/` | figures |
@@ -110,6 +109,7 @@ Tags of the models:
 | `no_dur`, `no_meas`, `no_rhythm`, `no_oct`, `pc_acc`, `pc_only` | feature ablations |
 | `interval`, `interval_only` | interval representation, with and without duration and measure position |
 | `transpose_aug` | trained with random transposition of the training pieces |
+| `transpose_aug_long` | the same with a larger training budget: up to 300 epochs, early stopping after 30 epochs, learning rate halved after 10 epochs without improvement (reported in the paper) |
 | `train_shuffle` | trained on pieces with shuffled note order |
 | `hp_00` ... `hp_19` | trials of the hyperparameter search |
 | `search_best` | the configuration with the lowest validation loss in the search (`hp_16`: 64 hidden units), trained on the five splits |

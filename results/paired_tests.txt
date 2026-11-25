@@ -231,6 +231,21 @@ hist_abs_dur__svm_rbf                  4  0.908571  0.905217      0.931034      
         transpose_aug                  4  0.531429  0.520425      0.609195        46.0
         transpose_aug  transpose+4     4  0.502857  0.486273      0.609195        46.0
         transpose_aug  transpose+9     4  0.617143  0.611588      0.609195        46.0
+   transpose_aug_long                  0  0.828571  0.827374      0.833333        84.0
+   transpose_aug_long  transpose+4     0  0.840000  0.827419      0.833333        84.0
+   transpose_aug_long  transpose+9     0  0.885714  0.881933      0.833333        84.0
+   transpose_aug_long                  1  0.788571  0.781429      0.775862        76.0
+   transpose_aug_long  transpose+4     1  0.771429  0.767206      0.775862        76.0
+   transpose_aug_long  transpose+9     1  0.794286  0.789939      0.775862        76.0
+   transpose_aug_long                  2  0.794286  0.787171      0.781609       106.0
+   transpose_aug_long  transpose+4     2  0.822857  0.812215      0.781609       106.0
+   transpose_aug_long  transpose+9     2  0.771429  0.754495      0.781609       106.0
+   transpose_aug_long                  3  0.600000  0.596765      0.580460        41.0
+   transpose_aug_long  transpose+4     3  0.548571  0.558269      0.580460        41.0
+   transpose_aug_long  transpose+9     3  0.622857  0.622270      0.580460        41.0
+   transpose_aug_long                  4  0.588571  0.572563      0.643678        44.0
+   transpose_aug_long  transpose+4     4  0.605714  0.606042      0.643678        44.0
+   transpose_aug_long  transpose+9     4  0.731429  0.734915      0.643678        44.0
 
 Summary (mean, SD, 95% CI half-width over seeds)
                    tag perturbation  n  acc_mean   acc_sd   acc_ci  acc_min  acc_max  f1_mean    f1_sd    f1_ci  epochs
@@ -296,6 +311,9 @@ hist_abs_dur__svm_rbf               5  0.930286 0.014228 0.017667 0.908571 0.942
         transpose_aug               5  0.540571 0.191774 0.238118 0.302857 0.794286 0.530828 0.200898 0.249447    33.0
         transpose_aug  transpose+4  5  0.531429 0.167430 0.207891 0.337143 0.742857 0.521824 0.173205 0.215062    33.0
         transpose_aug  transpose+9  5  0.588571 0.185912 0.230840 0.348571 0.817143 0.582530 0.190142 0.236092    33.0
+   transpose_aug_long               5  0.720000 0.115846 0.143842 0.588571 0.828571 0.713061 0.118847 0.147568    70.2
+   transpose_aug_long  transpose+4  5  0.717714 0.132332 0.164312 0.548571 0.840000 0.714230 0.123741 0.153645    70.2
+   transpose_aug_long  transpose+9  5  0.761143 0.095823 0.118980 0.622857 0.885714 0.756710 0.093993 0.116708    70.2
 
 Paired comparison with the proposed model ('full', unperturbed) over the shared splits:
 delta_points = mean accuracy difference in percentage points; p = paired t-test
@@ -341,6 +359,9 @@ hist_abs_dur__svm_rbf                      5   93.0286        1.0286      0.2441
         transpose_aug                      5   54.0571      -37.9429      0.0114                  True
         transpose_aug  transpose+4         5   53.1429      -38.8571      0.0065                  True
         transpose_aug  transpose+9         5   58.8571      -33.1429      0.0169                  True
+   transpose_aug_long                      5   72.0000      -20.0000      0.0120                  True
+   transpose_aug_long  transpose+4         5   71.7714      -20.2286      0.0193                  True
+   transpose_aug_long  transpose+9         5   76.1143      -15.8857      0.0156                  True
 
 pc_acc - pc_only: +22.97 points, paired t-test p = 0.00076
 
@@ -376,3 +397,4 @@ hist_abs_dur__svm_rbf      61            28             7           0.743       
           search_best      63            31             9           0.700             0.84
         train_shuffle      95            38             7           0.671             0.74
         transpose_aug     402            29            26           0.571             0.58
+   transpose_aug_long     245            41            21           0.586             0.62

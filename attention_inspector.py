@@ -60,7 +60,8 @@ class AttentionInspector:
         alpha                   attention weight of the note
         norm_attn               T * alpha (1 = average attention in the piece)
         high                    alpha is in the top 5% of its piece
-        pitch, pitch_aeu        pitch name as stored / as written in SymbTr
+        pitch, pitch_aeu        pitch name as stored / as written in the SymbTr
+                                files of the makam of the piece
         is_rest, komma_class    rest flag, pitch class in kommas (0-52)
         dur, dur_bin            relative duration and its bin
         meas_pos                position in the measure (start, middle, end)
@@ -112,7 +113,8 @@ class AttentionInspector:
                         "norm_attn": float(attn[t] * T),
                         "high": bool(attn[t] >= high_threshold),
                         "pitch": get_sharp_name(pc, acc),
-                        "pitch_aeu": get_symbtr_name(pc, acc, self.spelling_map),
+                        "pitch_aeu": get_symbtr_name(
+                            pc, acc, self.spelling_map[MAKAM_NAMES[label]]),
                         "is_rest": pc == REST_ID,
                         "komma_class": komma_class,
                         "dur": self.dur_values[int(durs[t])],

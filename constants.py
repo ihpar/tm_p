@@ -14,7 +14,8 @@ QUICK_TEST_RESULTS_DIR = "results_quick_test/"
 QUICK_TEST_FIGS_DIR = "figs_quick_test/"
 
 # ---------------------------------------------------------------------------
-# Vocabularies (identical to vocab.pkl)
+# Vocabularies (the same ids as in vocab.pkl; the rest token is called
+# "Es" there, as in the SymbTr files)
 # ---------------------------------------------------------------------------
 PC_VOCAB = {
     "PAD": 0, "Rest": 1,

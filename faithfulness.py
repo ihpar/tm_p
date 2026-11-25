@@ -472,3 +472,17 @@ def load_deletion_tests(tag, results_dir=RESULTS_DIR):
     summary = pd.read_csv(os.path.join(out_dir, f"{tag}_summary.csv"))
 
     return curves, summary
+
+
+def load_pitch_matched_deletion_tests(tag, results_dir=RESULTS_DIR):
+    """
+    Loads the tables written by run_pitch_matched_deletion_tests.
+    returns curves, summary (DataFrames)
+    """
+    out_dir = os.path.join(results_dir, "faithfulness")
+    curves = pd.read_csv(
+        os.path.join(out_dir, f"{tag}_pitch_matched_curves.csv"))
+    summary = pd.read_csv(
+        os.path.join(out_dir, f"{tag}_pitch_matched_summary.csv"))
+
+    return curves, summary

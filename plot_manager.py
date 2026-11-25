@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from collections import Counter
 from matplotlib.patches import Patch
@@ -25,13 +26,13 @@ OVERVIEW_ROWS = [
     ("no_meas", "", "− measure position", "ablation"),
     ("no_rhythm", "", "− duration − measure position", "ablation"),
     ("no_oct", "", "− octave", "ablation"),
-    ("pc_acc", "", "pitch class + accidental only", "ablation"),
-    ("pc_only", "", "pitch class only", "ablation"),
+    ("pc_acc", "", "note letter + accidental only", "ablation"),
+    ("pc_only", "", "note letter only", "ablation"),
     ("interval", "", "interval representation (+dur, meas)", "invariance"),
     ("interval_only", "", "interval representation only", "invariance"),
-    ("transpose_aug", "", "abs. pitch + transposition augmentation", "invariance"),
-    ("transpose_aug", "transpose+4", "  same, tested transposed +4 kommas", "invariance"),
-    ("transpose_aug", "transpose+9", "  same, tested transposed +9 kommas", "invariance"),
+    ("transpose_aug_long", "", "abs. pitch + transposition augmentation", "invariance"),
+    ("transpose_aug_long", "transpose+4", "  same, tested transposed +4 kommas", "invariance"),
+    ("transpose_aug_long", "transpose+9", "  same, tested transposed +9 kommas", "invariance"),
     ("full", "transpose+4", "proposed, tested transposed +4 kommas", "control"),
     ("full", "transpose+9", "proposed, tested transposed +9 kommas", "control"),
     ("full", "transpose-9", "proposed, tested transposed −9 kommas", "control"),
@@ -51,7 +52,8 @@ DELETION_ORDER_LABELS = {
     "attn_top": "highest attention first",
     "grad_top": "highest saliency first",
     "random": "random",
-    "attn_bottom": "lowest attention first"
+    "attn_bottom": "lowest attention first",
+    "pitch_matched": "same pitches as highest attention,\nrandom positions"
 }
 
 # deletion order -> (marker, line style)
@@ -59,7 +61,8 @@ DELETION_ORDER_STYLES = {
     "attn_top": ("o", "-"),
     "grad_top": ("s", "-"),
     "random": ("^", "--"),
-    "attn_bottom": ("v", ":")
+    "attn_bottom": ("v", ":"),
+    "pitch_matched": ("D", "-.")
 }
 
 
@@ -125,7 +128,7 @@ class PlotManager:
     def plot_length_histogram(self, pieces, save_fig=False):
         """
         Number of notes per piece, on a logarithmic axis.
-        Dashed lines: median (black) and 95th percentile (red).
+        Median (dashed line) and 95th percentile (dotted line).
         """
         lengths = np.array([len(piece["notes"]) for piece in pieces])
 
@@ -137,7 +140,7 @@ class PlotManager:
         ax.hist(lengths, bins=bins, color="#9ecae1", edgecolor="white")
 
         ax.axvline(np.median(lengths), color="k", ls="--", lw=1)
-        ax.axvline(np.percentile(lengths, 95), color="#d62728", ls="--", lw=1)
+        ax.axvline(np.percentile(lengths, 95), color="#d62728", ls=":", lw=1.5)
 
         ax.set_xlabel("Notes per piece")
         ax.set_ylabel("Pieces")
@@ -271,18 +274,37 @@ class PlotManager:
     # -----------------------------------------------------------------------
     # Faithfulness
     # -----------------------------------------------------------------------
-    def plot_deletion_curves(self, curves, summary, tag, save_fig=False):
+    def plot_deletion_curves(
+        self,
+        curves,
+        summary,
+        tag,
+        pitch_matched_summary=None,
+        save_fig=False
+    ):
         """
         Test accuracy after deleting a fraction of the notes of every piece,
         for the four deletion orders (mean ± SD over the seeds).
 
         curves, summary: DataFrames from faithfulness.run_deletion_tests
+        pitch_matched_summary: summary from
+            faithfulness.run_pitch_matched_deletion_tests. If given, the
+            control (same pitches, random positions) is drawn as a fifth curve.
         """
+        order_names = ["attn_top", "grad_top", "random", "attn_bottom"]
+
+        if pitch_matched_summary is not None:
+            control_rows = pitch_matched_summary[
+                pitch_matched_summary["order"] == "pitch_matched"]
+            summary = pd.concat([summary, control_rows], ignore_index=True)
+            order_names = [
+                "attn_top", "grad_top", "random", "attn_bottom", "pitch_matched"]
+
         base_accuracy = curves["base_accuracy"].mean()
 
         fig, ax = plt.subplots(figsize=(5.5, 3.8))
 
-        for order_name in ["attn_top", "grad_top", "random", "attn_bottom"]:
+        for order_name in order_names:
             rows = summary[summary["order"] == order_name].sort_values("frac")
 
             # start every curve at 0% deleted = accuracy of the full pieces
@@ -328,9 +350,13 @@ class PlotManager:
         pitch_order: False -> pitches ordered by frequency
                      True  -> pitches ordered by pitch
         """
-        makams = sorted(enrichment["makam"].unique())
+        # the makams in the order of the other figures and tables
+        # (most frequent first)
+        makams = [m for m in MAKAM_NAMES if m in set(enrichment["makam"])]
 
-        fig, axes = plt.subplots(4, 3, figsize=(12, 13), sharey=False)
+        # The figure is as wide as a page, so that the labels keep a
+        # readable size in print.
+        fig, axes = plt.subplots(4, 3, figsize=(7.6, 10.2), sharey=False)
 
         for ax, makam in zip(axes.ravel(), makams):
             rows = enrichment[enrichment["makam"] == makam]
@@ -353,10 +379,12 @@ class PlotManager:
                 with_accidental_symbols(pitch) for pitch in rows["pitch_aeu"]]
             ax.set_xticks(x)
             ax.set_xticklabels(pitch_labels, rotation=60, fontsize=8)
+            ax.tick_params(axis="y", labelsize=8)
+            ax2.tick_params(axis="y", labelsize=8)
 
             makam_name = MAKAM_DISPLAY_NAMES.get(makam, makam)
             entropy = rows["attn_entropy_bits"].iloc[0]
-            ax.set_title(f"{makam_name}  (H = {entropy:.2f} bits)", fontsize=10)
+            ax.set_title(f"{makam_name}  (H = {entropy:.2f} bits)", fontsize=9)
             ax.set_ylabel("%", fontsize=8)
             ax2.set_ylabel("enrichment", fontsize=8)
 
@@ -364,7 +392,7 @@ class PlotManager:
         handles.append(plt.Line2D([], [], color="k", marker=".", lw=1))
         legend_labels.append("enrichment (attention/occurrence)")
         fig.legend(handles, legend_labels,
-                   loc="lower center", ncol=3, fontsize=9)
+                   loc="lower center", ncol=3, fontsize=8)
 
         fig.tight_layout(rect=(0, 0.03, 1, 1))
 
