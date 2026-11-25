@@ -20,6 +20,11 @@ are redistributed here under the same license. If you use them, please cite:
 > information retrieval: SymbTr. In Proceedings of the 13th International Society for
 > Music Information Retrieval Conference (ISMIR), pp. 223-228.
 
+## License
+
+The code is released under the MIT License (see `LICENSE`). The SymbTr score files and the
+files derived from them keep the SymbTr license described above.
+
 ## How to run
 
 ```bash
