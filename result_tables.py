@@ -167,13 +167,42 @@ def paired_difference(per_seed, tag_a, tag_b):
     return difference.mean(), p_value
 
 
-def paired_tests(per_seed, reference_tag="full"):
+def corrected_resampled_t_test(difference, num_train, num_test):
+    """
+    Corrected resampled t-test of Nadeau & Bengio (2003).
+
+    The splits share training and test pieces, so they are not independent
+    and the usual paired t-test is too optimistic. The correction replaces
+    the factor 1/J of the variance of the mean difference by
+    1/J + num_test/num_train (J = number of splits).
+
+    difference: differences of two models over the splits (array)
+    returns the two-sided p-value
+    """
+    difference = np.asarray(difference, dtype=float)
+    num_splits = len(difference)
+
+    variance = difference.var(ddof=1)
+    if variance == 0:
+        return float("nan")
+
+    factor = 1 / num_splits + num_test / num_train
+    t_value = difference.mean() / np.sqrt(factor * variance)
+
+    return float(2 * stats.t.sf(abs(t_value), num_splits - 1))
+
+
+def paired_tests(per_seed, reference_tag="full", num_train=813, num_test=175):
     """
     Paired comparison of every tag and perturbation with the unperturbed
     reference model, over the splits they share.
 
     delta_points: mean accuracy difference in percentage points
+    ci_low, ci_high: 95% confidence interval of delta_points (t distribution)
     p_paired_t:   p-value of the paired t-test
+    p_corrected:  p-value of the corrected resampled t-test, which takes
+                  the overlap of the splits into account
+                  (num_train, num_test: pieces per training and test subset)
     all_splits_same_sign: the difference has the same sign on every split
     """
     reference = get_accuracy_by_seed(per_seed, reference_tag)
@@ -195,13 +224,22 @@ def paired_tests(per_seed, reference_tag="full"):
         all_positive = bool((difference > 0).all())
         all_negative = bool((difference < 0).all())
 
+        # half-width of the 95% confidence interval of the mean difference
+        num_splits = len(common_seeds)
+        standard_error = difference.std(ddof=1) / np.sqrt(num_splits)
+        half_width = stats.t.ppf(0.975, num_splits - 1) * standard_error
+
         rows.append({
             "tag": tag,
             "perturbation": perturbation,
-            "n_splits": len(common_seeds),
+            "n_splits": num_splits,
             "acc_mean": 100 * accuracy.loc[common_seeds].mean(),
             "delta_points": difference.mean(),
+            "ci_low": difference.mean() - half_width,
+            "ci_high": difference.mean() + half_width,
             "p_paired_t": stats.ttest_rel(values, reference_values).pvalue,
+            "p_corrected": corrected_resampled_t_test(
+                difference, num_train, num_test),
             "all_splits_same_sign": all_positive or all_negative
         })
 

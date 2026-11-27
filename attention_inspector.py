@@ -269,6 +269,45 @@ class AttentionInspector:
 
         return enrichment
 
+    def enrichment_checks(self, note_table, min_occ_share=0.05):
+        """
+        Two checks on the pitch enrichment.
+
+        1) Enrichment under uniform attention. The attention share gives
+           every piece the same weight, the occurrence share gives long
+           pieces more weight. So even if every note of a piece got the
+           same attention (alpha = 1/T), the enrichment would not be
+           exactly 1. Its range is reported for the pitches with at least
+           min_occ_share of the notes of their makam.
+
+        2) Attention share from alpha against attention share from
+           T * alpha (every note weighted by the length of its piece):
+           the largest difference over all makams and pitches.
+        """
+        pitched_notes = note_table[~note_table["is_rest"]].copy()
+        pitched_notes["uniform_alpha"] = 1.0 / pitched_notes["T"]
+
+        def share_by_pitch(column):
+            total = pitched_notes.groupby(["makam", "pitch"])[column].sum()
+            return total / total.groupby("makam").transform("sum")
+
+        occurrences = pitched_notes.groupby(["makam", "pitch"]).size()
+        occ_share = occurrences / occurrences.groupby("makam").transform("sum")
+
+        uniform_enrichment = share_by_pitch("uniform_alpha") / occ_share
+        frequent = uniform_enrichment[occ_share >= min_occ_share]
+
+        share_difference = (
+            share_by_pitch("alpha") - share_by_pitch("norm_attn")).abs()
+
+        return {
+            "min_occ_share": min_occ_share,
+            "uniform_attention_enrichment_min": float(frequent.min()),
+            "uniform_attention_enrichment_max": float(frequent.max()),
+            "max_share_difference_alpha_vs_norm_attn":
+                float(share_difference.max())
+        }
+
     # -----------------------------------------------------------------------
     # Duration
     # -----------------------------------------------------------------------
@@ -290,6 +329,96 @@ class AttentionInspector:
             per_unit = grouped[value].agg("median")
 
         return per_unit.unstack("dur_bin")
+
+    def average_over_splits(self, unit_table):
+        """
+        A piece that is in the test subset of several splits gives several
+        units, which are not independent. This returns one row per distinct
+        piece: the mean of its units.
+        """
+        return unit_table.groupby(level="f_name").mean()
+
+    def friedman_statistics(self, table):
+        """
+        Friedman test on the rows of `table` that have a value in every
+        column. returns a dict (empty values if there are too few rows)
+        """
+        complete_rows = table.dropna()
+        statistics = {"n": int(len(complete_rows))}
+
+        if len(complete_rows) >= 5:
+            chi2, p, kendall_w = friedman_test(complete_rows)
+            statistics["chi2"] = chi2
+            statistics["p"] = p
+            statistics["kendall_W"] = kendall_w
+
+            median_by_column = {}
+            mean_by_column = {}
+            for column in complete_rows.columns:
+                median_by_column[str(column)] = float(
+                    complete_rows[column].median())
+                mean_by_column[str(column)] = float(
+                    complete_rows[column].mean())
+            statistics["median"] = median_by_column
+            statistics["mean"] = mean_by_column
+
+        return statistics
+
+    def high_share_permutation_test(
+        self,
+        note_table,
+        num_permutations=200,
+        seed=0
+    ):
+        """
+        Is the Friedman test on the share of high-attention notes per
+        duration bin trustworthy?
+
+        Bins with few notes per unit (the long notes) have a share of 0 in
+        most units, simply because they are small. This alone produces a
+        Kendall's W above 0. To see how much, the high-attention flags are
+        shuffled among the notes of every unit, which removes any relation
+        with duration, and W is computed again; this is repeated
+        num_permutations times.
+
+        note_table: note table without the rests
+        returns the observed W, the mean and the maximum of the W values
+        after shuffling, and the permutation p-value
+        """
+        columns = UNIT_KEY + ["dur_bin", "high"]
+        notes = note_table[columns].copy()
+
+        observed_table = self.unit_by_duration_bin(notes, "high_share")
+        _, _, observed_w = friedman_test(observed_table.dropna())
+
+        # row numbers of the notes of every unit
+        rows_by_unit = notes.groupby(UNIT_KEY).indices
+        original_flags = notes["high"].values.copy()
+
+        rng = np.random.RandomState(seed)
+        shuffled_w_values = []
+
+        for _ in range(num_permutations):
+            shuffled_flags = original_flags.copy()
+            for unit_rows in rows_by_unit.values():
+                shuffled_flags[unit_rows] = rng.permutation(
+                    original_flags[unit_rows])
+
+            notes["high"] = shuffled_flags
+            shuffled_table = self.unit_by_duration_bin(notes, "high_share")
+            _, _, shuffled_w = friedman_test(shuffled_table.dropna())
+            shuffled_w_values.append(shuffled_w)
+
+        shuffled_w_values = np.array(shuffled_w_values)
+        num_at_least_observed = int((shuffled_w_values >= observed_w).sum())
+
+        return {
+            "observed_kendall_W": float(observed_w),
+            "shuffled_kendall_W_mean": float(shuffled_w_values.mean()),
+            "shuffled_kendall_W_max": float(shuffled_w_values.max()),
+            "p_permutation": (1 + num_at_least_observed) / (1 + num_permutations),
+            "num_permutations": num_permutations
+        }
 
     def pairwise_duration_tests(self, unit_table):
         """
@@ -380,6 +509,12 @@ class AttentionInspector:
         for dur_bin, rate in by_bin["high"].mean().items():
             high_rate_by_bin[str(dur_bin)] = float(rate)
 
+        median_by_bin = {}
+        for dur_bin, median in note_table.groupby(
+                "dur_bin", observed=False)["norm_attn"].median().items():
+            median_by_bin[str(dur_bin)] = float(median)
+        statistics["median_norm_attn_by_bin"] = median_by_bin
+
         statistics["chi2_5x2"] = {
             "chi2": float(chi2),
             "dof": int(dof),
@@ -427,6 +562,21 @@ class AttentionInspector:
             units_by_bin[dur_bin] = int(unit_table[dur_bin].notna().sum())
         statistics["piece_median_by_bin"] = median_by_bin
         statistics["n_pieces_by_bin"] = units_by_bin
+
+        # --- Friedman test without the last bin (very long notes).
+        # Few units have a very long note, so the test on all five bins
+        # uses only a small part of the units.
+        shorter_bins = list(unit_table.columns[:-1])
+        statistics["friedman_four_shorter_bins"] = self.friedman_statistics(
+            unit_table[shorter_bins])
+
+        # --- the same tests with one value per distinct piece
+        piece_table = self.average_over_splits(unit_table)
+        statistics["distinct_pieces"] = {
+            "five_bins": self.friedman_statistics(piece_table),
+            "four_shorter_bins": self.friedman_statistics(
+                piece_table[shorter_bins])
+        }
 
         # --- pairs of bins
         statistics["pairwise"] = self.pairwise_duration_tests(unit_table)
@@ -516,6 +666,29 @@ class AttentionInspector:
                 "n_pieces": int(len(complete_attn))
             }
 
+        # --- Are the rests behind the difference? Rests get little
+        # attention and are more frequent at the start and end of measures.
+        rest_share_by_position = {}
+        for position, share in note_table.groupby(
+                "meas_pos")["is_rest"].mean().items():
+            rest_share_by_position[position] = float(share)
+        statistics["rest_share_by_measure_position"] = rest_share_by_position
+
+        positions = ["start", "middle", "end"]
+
+        # the same test without the rests
+        pitched_table = self.unit_by_measure_position(pitched, "norm_attn")
+        statistics["measure_position_without_rests"] = \
+            self.friedman_statistics(pitched_table[positions])
+
+        # the same tests with one value per distinct piece
+        statistics["measure_position_distinct_pieces"] = \
+            self.friedman_statistics(
+                self.average_over_splits(attn_table)[positions])
+        statistics["measure_position_distinct_pieces_without_rests"] = \
+            self.friedman_statistics(
+                self.average_over_splits(pitched_table)[positions])
+
         return statistics
 
     # -----------------------------------------------------------------------
@@ -555,7 +728,10 @@ class AttentionInspector:
                 pitched_notes, "all test pieces"),
             "duration_correct_only": self.duration_statistics(
                 correct_pitched_notes, "correctly classified pieces"),
+            "high_share_permutation": self.high_share_permutation_test(
+                pitched_notes),
             "rest_and_measure": self.rest_and_measure_statistics(note_table),
+            "enrichment_checks": self.enrichment_checks(note_table),
             "attention_entropy_bits_by_makam":
                 by_makam["attn_entropy_bits"].first().to_dict(),
             "n_pitches_by_makam": by_makam["n_pitches"].first().to_dict()

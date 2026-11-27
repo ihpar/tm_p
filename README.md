@@ -6,7 +6,8 @@ experiments show what the model uses and whether its attention weights can be tr
 
 Tag `jnmr-r1` marks the state of the first revision. Two earlier trainings of the same
 pipeline, which the paper refers to for the duration analysis, are kept in the history of
-the repository: tag `jnmr-r1-prelim` (non-deterministic run) and commit `0dbc397`.
+the repository: tag `jnmr-r1-prelim` and commit `0dbc397`. Their pitch-enrichment tables and attention
+reports are also stored in `results/earlier_trainings/` (`prelim_*` and `first_deterministic_*`).
 
 ## Data
 
@@ -35,7 +36,7 @@ pip install -r requirements.txt
 
 PyTorch is installed first because its build has to match the GPU driver of the machine
 (the line above is an example, see https://pytorch.org/get-started). `requirements.txt`
-lists the other five libraries. The figures use the font Liberation Sans if it is installed
+lists the other libraries. The figures use the font Liberation Sans if it is installed
 (`apt-get update && apt-get install -y fonts-liberation`), otherwise DejaVu Sans.
 
 Run the notebooks in this order, every notebook from top to bottom:
@@ -43,10 +44,10 @@ Run the notebooks in this order, every notebook from top to bottom:
 | notebook | what it does | needs |
 |---|---|---|
 | `1_train.ipynb` | hyperparameter search, the proposed model on the five splits, pooling variants, the best configuration of the search on the five splits | GPU |
-| `2_ablations_and_controls.ipynb` | feature ablations, transposed and shuffled test pieces, interval representation | GPU, notebook 1 |
+| `2_ablations_and_controls.ipynb` | feature ablations, transposed and shuffled test pieces, interval representation, transposition augmentation, training on shuffled notes | GPU, notebook 1 |
 | `3_baselines.ipynb` | pitch-histogram and pitch-bigram classifiers | CPU |
-| `4_attention_analysis.ipynb` | deletion tests, attention statistics | GPU, notebooks 1 and 2 |
-| `5_tables_and_figures.ipynb` | summary tables, all figures | notebooks 1 to 4 |
+| `4_attention_analysis.ipynb` | deletion tests with the pitch-matched control, attention statistics | GPU (a CPU also works, about 10 minutes), notebooks 1 and 2 |
+| `5_tables_and_figures.ipynb` | summary tables, the further checks reported in the paper, all figures | notebooks 1 to 4 |
 
 All of it is about 105 trainings of roughly two minutes each plus the analyses: a few hours
 on one consumer GPU.
@@ -83,11 +84,12 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `faithfulness.py` | `run_deletion_tests`: deletion tests and attention-saliency rank correlation; `run_pitch_matched_deletion_tests`: the control that deletes the same pitches at random positions |
 | `attention_inspector.py` | `AttentionInspector`: note table, pitch enrichment, duration, measure-position and rest statistics |
 | `stat_utils.py` | confidence interval, Holm correction, Cliff's delta, Friedman test with Kendall's W |
-| `result_tables.py` | mean ± CI tables, paired t-tests against the proposed model, pooled per-makam report and confusions |
+| `result_tables.py` | mean ± CI tables, paired comparisons with the proposed model (confidence interval of the difference, paired t-test, corrected resampled t-test), pooled per-makam report and confusions |
+| `extra_checks.py` | checks computed from the stored results: pieces with the same opening, pieces tested in several splits, predictions for transposed pieces, comparison with the earlier trainings |
 | `plot_manager.py` | `PlotManager`: every figure of the paper |
 | `pitch_names.py` | pitch names as stored by the model and as written in SymbTr |
 | `disk_utils.py`, `utils.py` | result files and checkpoints; seeding, device, classification metrics |
-| `file_parser.py`, `txt_parser.ipynb` | SymbTr `.txt` parser that produced `dataset.pkl` and `vocab.pkl` from `data/txt/` (SymbTr v2.4.3) |
+| `file_parser.py`, `txt_parser.ipynb` | SymbTr `.txt` parser that produced `dataset.pkl` and `vocab.pkl` from `data/txt/` (SymbTr v2.4.3). The stored `dataset.pkl` and `vocab.pkl` are the reference: `txt_parser.ipynb` reads the files in the order of the file system, so running it again on another machine can order the pieces, and makams with the same number of pieces, differently |
 | `requirements.txt` | the libraries the code uses, with the versions that produced `results/` |
 | `environment_freeze.txt` | `pip freeze` of the machine that produced `results/` (NVIDIA GeForce RTX 4090) |
 
@@ -100,6 +102,7 @@ evaluate_trained_model(tag="full", seed=0, device=device, test_transpose=9)
 | `results/<tag>/seed<k>.pt` | trained model (kept for `full` and `no_meas`, which the attention analysis needs) |
 | `results/hparam_search.csv` | the 20 configurations of the hyperparameter search |
 | `results/faithfulness/` | deletion tests (`full_*`) and the pitch-matched control (`full_pitch_matched_*`) |
+| `results/earlier_trainings/` | pitch enrichment and attention report of the two earlier trainings the paper compares with |
 | `results/attention/` | note table (one row per note of every test piece), pitch enrichment, report with all attention statistics |
 | `results/summary.txt`, `full_pooled.txt`, `paired_tests.txt` | the tables of the paper as text |
 | `figs/` | figures |

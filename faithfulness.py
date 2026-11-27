@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, ttest_rel
 
 from constants import *
 from experiments import load_trained_model
@@ -486,3 +486,123 @@ def load_pitch_matched_deletion_tests(tag, results_dir=RESULTS_DIR):
         os.path.join(out_dir, f"{tag}_pitch_matched_summary.csv"))
 
     return curves, summary
+
+
+def compare_with_pitch_matched(pitch_matched_curves):
+    """
+    Deletion of the most attended notes against the pitch-matched control,
+    for every fraction of deleted notes:
+
+    drop_attn_top:       accuracy lost by deleting the most attended notes
+    drop_pitch_matched:  accuracy lost by the control
+    share_reproduced:    drop_pitch_matched / drop_attn_top
+    difference:          accuracy of the control minus accuracy after
+                         deleting the most attended notes (mean over seeds)
+    p_paired_t:          paired t-test of the two over the seeds
+    n_seeds_attn_lower:  seeds in which deleting the most attended notes
+                         hurts more than the control
+
+    All accuracies are in percentage points.
+    """
+    table = pitch_matched_curves.pivot_table(
+        index=["frac", "seed"], columns="order", values="accuracy")
+    base = pitch_matched_curves.groupby(["frac", "seed"])["base_accuracy"].first()
+
+    rows = []
+    for fraction in sorted(pitch_matched_curves["frac"].unique()):
+        attn_top = 100 * table.loc[fraction, "attn_top"]
+        pitch_matched = 100 * table.loc[fraction, "pitch_matched"]
+        base_accuracy = 100 * base.loc[fraction]
+
+        drop_attn_top = (base_accuracy - attn_top).mean()
+        drop_pitch_matched = (base_accuracy - pitch_matched).mean()
+        difference = pitch_matched - attn_top
+
+        rows.append({
+            "frac": fraction,
+            "acc_attn_top": attn_top.mean(),
+            "acc_pitch_matched": pitch_matched.mean(),
+            "drop_attn_top": drop_attn_top,
+            "drop_pitch_matched": drop_pitch_matched,
+            "share_reproduced": drop_pitch_matched / drop_attn_top,
+            "difference": difference.mean(),
+            "p_paired_t": float(
+                ttest_rel(pitch_matched.values, attn_top.values).pvalue),
+            "n_seeds_attn_lower": int((difference > 0).sum())
+        })
+
+    return pd.DataFrame(rows)
+
+
+def pitch_matched_overlap(note_table, fractions=DELETION_FRACTIONS):
+    """
+    How similar are the two sets of deleted notes?
+
+    The control draws, for every pitch, as many notes as the attention order
+    deletes, from all notes of that pitch in the piece. The most attended
+    notes are among them, so part of the control's notes are the most
+    attended notes themselves. When a large fraction is deleted this part is
+    large, and the two deletions must give similar results.
+
+    For a pitch with n notes in the piece of which k are among the most
+    attended notes, the control is expected to hit k * k / n of them.
+
+    note_table: note table with the rests (AttentionInspector.load_note_table)
+
+    returns a DataFrame with one row per fraction:
+    expected_overlap: expected share of the control's notes that are among
+                      the most attended notes (mean over the units)
+    forced_identical: share of the deleted notes that belong to a pitch of
+                      which every note is deleted (control = attention order)
+    """
+    pieces, _, _ = load_pieces()
+    notes_by_f_name = {}
+    for piece in pieces:
+        notes_by_f_name[piece["f_name"]] = piece["notes"]
+
+    rows = []
+    for fraction in fractions:
+        overlaps = []
+        forced = []
+
+        for (seed, f_name), unit_notes in note_table.groupby(["seed", "f_name"]):
+            unit_notes = unit_notes.sort_values("t")
+            alpha = unit_notes["alpha"].values
+            notes = notes_by_f_name[f_name]
+
+            T = len(notes)
+            num_delete = int(round(fraction * T))
+            num_delete = min(num_delete, T - 1)
+            if num_delete == 0:
+                continue
+
+            attention_order = np.argsort(-alpha)
+
+            num_in_piece = {}
+            for note in notes:
+                pitch = note[:3]
+                num_in_piece[pitch] = num_in_piece.get(pitch, 0) + 1
+
+            num_deleted = {}
+            for t in attention_order[:num_delete].tolist():
+                pitch = notes[t][:3]
+                num_deleted[pitch] = num_deleted.get(pitch, 0) + 1
+
+            expected_hits = 0.0
+            num_forced = 0
+            for pitch, k in num_deleted.items():
+                n = num_in_piece[pitch]
+                expected_hits += k * k / n
+                if k == n:
+                    num_forced += k
+
+            overlaps.append(expected_hits / num_delete)
+            forced.append(num_forced / num_delete)
+
+        rows.append({
+            "frac": fraction,
+            "expected_overlap": float(np.mean(overlaps)),
+            "forced_identical": float(np.mean(forced))
+        })
+
+    return pd.DataFrame(rows)
